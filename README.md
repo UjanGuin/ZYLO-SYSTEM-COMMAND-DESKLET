@@ -192,7 +192,7 @@ python3 main.py
 ## User Interaction Model
 The desklet keeps user interaction lightweight while still giving you full control over layout and lifecycle.  
 ### In-Widget Controls
-- **Header:** bold “ZYLO-SYSTEM-COMMAND-DESKLET” label announces the active assistant.  
+- **Header:** bold “Step-3.5” label announces the active assistant.  
 - **Reset button (↺):** clears the response/status text and brings focus back to the input.  
 - **Lock button (🔒/🔓):** toggles `is_locked`, preventing move/resize actions when enabled.  
 ### Input Flow and Status
