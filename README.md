@@ -17,6 +17,16 @@ ZYLO-SYSTEM-COMMAND-DESKLET is a tightly focused Linux-only desktop assistant th
   <img src="assets/ui102.png" width="1100" alt="ZYLO LINK UI Preview 4">
 </p>
 
+<p align="center">
+  <img src="assets/ui103.png" width="600" alt="ZYLO LINK UI Preview 4">
+</p><p align="center">
+  
+  <img src="assets/ui104.png" width="600" alt="ZYLO LINK UI Preview 4">
+</p><p align="center">
+  
+  <img src="assets/ui105.png" width="600" alt="ZYLO LINK UI Preview 4">
+</p>
+
 ## Table of Contents
 - [What This Project Does](#what-this-project-does)
 - [Core Features](#core-features)
