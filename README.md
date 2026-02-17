@@ -21,8 +21,8 @@ ZYLO-SYSTEM-COMMAND-DESKLET is a tightly focused Linux-only desktop assistant th
 - [Security and Safety Notes](#security-and-safety-notes)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
-- [GitHub Publishing Checklist](#github-publishing-checklist)
-- [Known Gaps](#known-gaps)
+
+
 
 ## What This Project Does
 ZYLO-SYSTEM-COMMAND-DESKLET assembles an autonomous Linux desktop companion with a deliberate separation between UI, orchestration, worker, configuration, and system helpers. It consistently keeps one or more translucent “desklet” windows alive, collects prompts from the user, feeds them into a constrained OpenAI-compatible assistant, and obeys the assistant when the model responds with the strictly defined JSON actions listed below.  
@@ -317,33 +317,4 @@ chmod +x uninstall.sh
 - Local `venv/`
 - Launcher `step-desklet`
 
-## GitHub Publishing Checklist
-Use this checklist to bring the repo up to publishing quality.
 
-- Add a `.gitignore` that excludes:
-  - `venv/`, `step_desklet_project.egg-info` (if created), and `__pycache__/`.
-  - `*.pyc`, `*.pyo`, and any local secrets/environment files.
-  - OS-generated metadata (e.g., `.DS_Store`, `Thumbs.db`).
-- Remove or rotate the hardcoded API key and ensure secrets are provided through environment variables or user config.
-- Introduce a `LICENSE` file to make reuse/legal status explicit.
-- Provide CI (GitHub Actions, similar) that:
-  - Installs dependencies from `requirements.txt`.
-  - Runs basic linting or type checking (e.g., `python -m py_compile` for core modules).
-  - Optionally spins up PyQt6 in headless mode to ensure the main modules import cleanly.
-- Consider adding unit tests that:
-  - Validate `config.load_configs()` handles corrupt JSON gracefully.
-  - Parse JSON returned by the worker to ensure `_extract_json()` behaves.
-- Harden command execution by:
-  - Introducing allow/deny lists per instance.
-  - Logging every command and response in `~/.local/share/step_desklet/logs`.
-  - Highlighting the risk of arbitrary command execution in top-level docs (done here).
-- Verify scripts are executable (e.g., `chmod +x install.sh uninstall.sh step-desklet main.py`).
-
-Document these in the repo README so future maintainers know what publishing steps exist.
-
-## Known Gaps
-- There are no automated tests or CI workflows; manual verification is currently required before reuse or release.  
-- No packaging metadata (`pyproject.toml` / `setup.py`), so publishing to PyPI or pip installing this package is not yet supported.  
-- Linux desktop integration varies by distro/WM/Wayland vs. X11, especially around `_NET_WM_WINDOW_TYPE`.  
-- The security model is intentionally permissive for research/demo usage; production builds should add confirmations, sanitized execution paths, and extensive logging before deploying.  
-- The UI lacks localization or accessibility features, so improvements may be needed for wider audiences.
