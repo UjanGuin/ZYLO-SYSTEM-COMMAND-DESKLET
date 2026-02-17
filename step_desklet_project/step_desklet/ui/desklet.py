@@ -33,7 +33,7 @@ class StepDesklet(QWidget):
         self.response_max_height = 420
 
         # Build Worker
-        api_key = os.getenv("NVIDIA_API_KEY") or config.get("api_key") or "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"
+        api_key = os.getenv("NVIDIA_API_KEY") or config.get("api_key") or "paste_your_api_key"
         self.worker = StepAIWorker(
             api_key=api_key,
             base_url=config.get("base_url", "https://integrate.api.nvidia.com/v1"),
