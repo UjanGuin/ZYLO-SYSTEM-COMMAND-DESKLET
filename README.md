@@ -202,6 +202,21 @@ cd /home/ujan/Desktop/CUSAI/step_desklet_project
 
 Inspect the script before running it to confirm nothing unexpected happens.
 
+### API KEY:
+Replace `paste_your_api_key` with your actual api key generated from NVIDIA website.
+
+```python
+
+        # Build Worker
+        api_key = os.getenv("NVIDIA_API_KEY") or config.get("api_key") or "paste_your_api_key"
+        self.worker = StepAIWorker(
+            api_key=api_key,
+            base_url=config.get("base_url", "https://integrate.api.nvidia.com/v1"),
+            model=config.get("model", "stepfun-ai/step-3.5-flash")
+        )
+
+```
+
 ## Run and CLI Options
 ### Preferred Startup
 The `step-desklet` launcher is the most convenient method because it activates `venv` for you.
