@@ -101,7 +101,6 @@ step_desklet_project/
 ├── requirements.txt
 ├── step-desklet
 ├── uninstall.sh
-├── README.md
 └── step_desklet/
     ├── __init__.py
     ├── core/
