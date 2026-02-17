@@ -27,9 +27,9 @@ ZYLO-SYSTEM-COMMAND-DESKLET is a tightly focused Linux-only desktop assistant tl
 </div>
 
 <div align="center">
-  <img src="assets/ui106.png" width="33%">
-  <img src="assets/ui107.png" width="32%">
-  <img src="assets/ui108.png" width="32%">
+  <img src="assets/ui106.png" width="33.5%">
+  <img src="assets/ui107.png" width="31.6%">
+  <img src="assets/ui108.png" width="32.5%">
 </div>
 
 ## Table of Contents
