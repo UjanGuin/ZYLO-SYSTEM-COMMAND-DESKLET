@@ -203,7 +203,7 @@ cd /home/ujan/Desktop/CUSAI/step_desklet_project
 Inspect the script before running it to confirm nothing unexpected happens.
 
 ### API KEY:
-Replace `paste_your_api_key` with your actual api key generated from NVIDIA website.
+Replace `paste_your_api_key` of `step_desklet_project/step_desklet/ui/desklet.py` with your actual api key generated from [NVIDIA NIM website](https://build.nvidia.com/settings/api-keys) for **free**.
 
 ```python
 
