@@ -12,6 +12,11 @@
 
 ZYLO-SYSTEM-COMMAND-DESKLET is a tightly focused Linux-only desktop assistant that blends a translucent PyQt6 widget with an OpenAI-compatible agent loop and a shell-execution feedback loop. The desklet sits below normal application windows, resists desktop-hide states, and keeps itself on the corner of your screen as a lightweight command intake surface. Users type natural-language requests directly into the widget, the embedded worker dispatches them to a configurable NVIDIA/Step-style chat endpoint, and the model can in turn either reply with a final answer or return structured JSON that tells the agent to execute commands on the host. Any output from the commands is echoed back to the model so it can complete multi-step workflows, and every desklet instance persists its position, size, lock state, and endpoint credentials for a seamless next launch. The combination of geometric persistence, context-aware status displays, and unstable desktop hints makes the desklet feel like a native assistant in any Linux session.
 
+
+<p align="center">
+  <img src="assets/ui102.png" width="1100" alt="ZYLO LINK UI Preview 4">
+</p>
+
 ## Table of Contents
 - [What This Project Does](#what-this-project-does)
 - [Core Features](#core-features)
