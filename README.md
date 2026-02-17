@@ -93,6 +93,31 @@ ZYLO-SYSTEM-COMMAND-DESKLET prioritizes lightweight persistence, transparency, a
 ## Complete Repository File Map
 This section covers every file/folder currently present in the project root.
 
+### Repository Layout
+```
+step_desklet_project/
+├── install.sh
+├── main.py
+├── requirements.txt
+├── step-desklet
+├── uninstall.sh
+├── README.md
+└── step_desklet/
+    ├── __init__.py
+    ├── core/
+    │   ├── __init__.py
+    │   ├── config.py
+    │   └── worker.py
+    ├── system/
+    │   ├── __init__.py
+    │   └── autostart.py
+    └── ui/
+        ├── __init__.py
+        ├── desklet.py
+        └── manager.py
+```
+
+
 ### Top-Level Files
 - `main.py`
   - Application entry point and CLI.
