@@ -8,12 +8,8 @@
 ![Desktop](https://img.shields.io/badge/desktop-linux_only-blueviolet)
 ![Security](https://img.shields.io/badge/security-warning-orange)
 ![License](https://img.shields.io/badge/license-unlicensed-lightgrey)
-![Status](https://img.shields.io/badge/status-experimental-orange)
-![Maintenance](https://img.shields.io/badge/maintenance-active-brightgreen)
-![Desktop](https://img.shields.io/badge/desktop-linux_only-blueviolet)
-![Security](https://img.shields.io/badge/security-warning-orange) 
 
-ZYLO-SYSTEM-COMMAND-DESKLET is a tightly focused Linux-only desktop assistant that blends a translucent PyQt6 widget with an OpenAI-compatible agent loop and a shell-execution feedback loop. The desklet sits below normal application windows, resists desktop-hide states, and keeps itself on the corner of your screen as a lightweight command intake surface. Users type natural-language requests directly into the widget, the embedded worker dispatches them to a configurable NVIDIA/Step-style chat endpoint, and the model can in turn either reply with a final answer or return structured JSON that tells the agent to execute commands on the host. Any output from the commands is echoed back to the model so it can complete multi-step workflows, and every desklet instance persists its position, size, lock state, and endpoint credentials for a seamless next launch. The combination of geometric persistence, context-aware status displays, and unstable desktop hints makes the desklet feel like a native assistant in any Linux session.
+ZYLO-SYSTEM-COMMAND-DESKLET is a Linux-only desktop assistant that combines a translucent PyQt6 desklet, an OpenAI-compatible command engine, and a hold-to-talk voice pipeline. The desklet sits below normal app windows, supports typed commands and global `Ctrl+M` push-to-talk voice commands, executes model-returned shell actions, and persists instance geometry/config across launches. Voice mode records while the hotkey is held, transcribes with `stt.py`, runs the same `step-3.5-flash` command engine used by typed mode, then speaks the final result using NVIDIA TTS (energetic Magpie voice).
 
 
 <p align="center">
@@ -62,14 +58,18 @@ ZYLO-SYSTEM-COMMAND-DESKLET assembles an autonomous Linux desktop companion with
 - Geometry, lock states, user-specified dimensions, and endpoint metadata persist inside `~/.local/share/step_desklet/desklets.json`, so desklets resume layout on every launch.  
 - Prompts are routed through the worker loop, which demands either `{"mode":"run","command":"…","reason":"…"}` to execute a shell command or `{"mode":"final","message":"…"}` to close the conversation.  
 - Any command output (stdout/stderr/exit) becomes input for the next turn, allowing chained tasks without leaving the desklet.  
+- Voice mode uses global hold-to-talk (`Ctrl+M`), routes transcripts through the same worker engine, and plays spoken output via NVIDIA TTS.
 - Default startup installs an autostart `.desktop` entry under `~/.config/autostart/step-desklet.desktop`, but CLI flags allow opting out or resetting the config before even launching.
 
 ## Core Features
 ZYLO-SYSTEM-COMMAND-DESKLET prioritizes lightweight persistence, transparency, and control over the desktop experience:
 - **Multi-instance flow:** Each saved configuration spawns its own floating window, and the context menu lets you add/remove desklets without restarting the app.  
 - **Geometry & lock persistence:** Instanced values for `x`, `y`, `w`, `h`, and `is_locked` live in the shared JSON so you can lock a desklet in place and have it stay there.  
-- **Intentional UI layout:** A bold header, two icon buttons, and menu-less layout keep the footprint small, while a single-line input and multi-line response area serve both text queries and structured JSON feedback.  
+- **Dual interaction modes:** Typed mode shows full model replies in the desklet; voice mode hides the chat box and uses global `Ctrl+M` hold-to-talk from anywhere on the desktop.  
+- **Voice pipeline:** Hold `Ctrl+M` to record, release to stop, transcribe with `stt.py`, execute via `step-3.5-flash`, and speak output with NVIDIA TTS (`Magpie-Multilingual.EN-US.Aria.Happy`).  
+- **Intentional UI layout:** Header controls include a voice button (left of reset), reset button, and lock button; listening/speaking state drives border glow animations and mic/speaker icon state.  
 - **Model endpoint controls:** Every instance can set `api_key`, `base_url`, and `model` values, letting you pair with different Step-style endpoints, official `"Step3-5"` flavors, or even a private proxy.  
+- **Open-command reliability:** File/app open intents use fast-path handling, detached GUI launch commands, and fallback resolution for recent-file and missing-path requests.  
 - **Linux desktop friendliness:** The widget requests desktop-layer hints, reinvokes `apply_desklet_hints()` on show/resizing, and retries `xprop`/`wmctrl` commands so the desklet stays below active windows without vanishing when the desktop is revealed.
 
 ## Architecture and Runtime Flow
@@ -91,7 +91,13 @@ ZYLO-SYSTEM-COMMAND-DESKLET prioritizes lightweight persistence, transparency, a
 ### 3) UI Layer (`step_desklet/ui/desklet.py`)
 - Builds a frameless, translucent desklet window.
 - Applies Linux/X11 window hints to stay desktop-layer-like.
-- Supports:
+- Supports typed mode and voice mode:
+  - **Typed mode:** input box + rendered response area.
+  - **Voice mode:** hides input/response surface and shows status-only flow.
+- Header controls:
+  - Voice toggle button (`🔈`/`🔊`) to enable/disable voice mode.
+  - Reset button (`↺`) and lock button (`🔒`/`🔓`).
+- UI interactions:
   - Drag move (when unlocked).
   - Bottom-right resize handle zone.
   - Context menu actions: add new, lock/unlock, remove current, exit all.
@@ -100,25 +106,43 @@ ZYLO-SYSTEM-COMMAND-DESKLET prioritizes lightweight persistence, transparency, a
   - Delegates to worker for model/command loop.
 - Dynamically resizes response area and overall desklet height.
 - Persists geometry with timer-based coalescing.
+- Triggers listening/speaking border glow animations during voice flow.
 
 ### 4) Worker Layer (`step_desklet/core/worker.py`)
 - Creates `OpenAI` client with configured `api_key`, `base_url`, and `model`.
 - Maintains conversation history with a fixed system prompt.
-- For up to 100 iterations:
+- For each request (up to 100 iterations in normal mode):
   - Calls chat completions.
   - Extracts first JSON object from model output.
   - If `mode=run`, executes shell command and sends stdout/stderr/exit code back as user feedback.
   - If `mode=final`, emits final response and returns.
-- Uses `subprocess.run(..., shell=True, timeout=120)`.
-- Contains basic `sudo` handling by transforming `sudo` to `sudo -S` and piping a placeholder password string.
+- Includes open-intent optimizations:
+  - Fast short-context path for direct `open ...` requests.
+  - Recent-file intent (`open last N modified files ...`) support.
+  - Open-command normalization (`open` -> `xdg-open`, viewer -> `xdg-open`).
+  - Bulk-open rewrite for `xargs`/subshell forms to per-file `xdg-open`.
+  - Auto-detach GUI launchers (`nohup ... &`) to avoid long `Executing...` stalls.
 
-### 5) Config Layer (`step_desklet/core/config.py`)
+### 5) Voice Mode Layer (`step_desklet/core/voice_mode.py`)
+- Handles global hotkey capture via:
+  - `pynput` listener first.
+  - X11 `xinput` fallback when `pynput` is unavailable.
+- Push-to-talk behavior:
+  - `Ctrl+M` press starts recording (`arecord` preferred, `ffmpeg` fallback).
+  - Releasing either key stops recording and starts pipeline processing.
+- Voice processing flow:
+  - STT via `transcribe_wav_file()` from `stt.py`.
+  - Transcript sent to the same command worker (`StepAIWorker`) using `step-3.5-flash`.
+  - Reply is sanitized (e.g., strips `*`) and spoken via NVIDIA `talk.py`.
+- TTS playback uses `ffplay` and emits speaking-state signals to the desklet for animation.
+
+### 6) Config Layer (`step_desklet/core/config.py`)
 - Stores config at `~/.local/share/step_desklet/desklets.json`.
 - Creates config directory if missing.
 - Uses atomic-style save (`.tmp` + `fsync` + `os.replace`).
 - Supports load, add instance, update instance, remove instance.
 
-### 6) System Layer (`step_desklet/system/autostart.py`)
+### 7) System Layer (`step_desklet/system/autostart.py`)
 - Writes `~/.config/autostart/step-desklet.desktop`.
 - Quotes executable path so paths with spaces remain valid.
 
@@ -128,16 +152,20 @@ This section covers every file/folder currently present in the project root.
 ### Repository Layout
 ```
 step_desklet_project/
+├── README.md
 ├── install.sh
 ├── main.py
 ├── requirements.txt
 ├── step-desklet
+├── stt.py
 ├── uninstall.sh
+├── voice.py
 └── step_desklet/
     ├── __init__.py
     ├── core/
     │   ├── __init__.py
     │   ├── config.py
+    │   ├── voice_mode.py
     │   └── worker.py
     ├── system/
     │   ├── __init__.py
@@ -157,9 +185,13 @@ step_desklet_project/
 - `uninstall.sh`
   - Removes autostart file, config directory, local venv, and launcher.
 - `requirements.txt`
-  - Python dependency list: `PyQt6`, `openai`, `python-dotenv`, `requests`.
+  - Python dependency list for UI, model client, STT, and global hotkey (`PyQt6`, `openai`, `assemblyai`, `pynput`, ...).
 - `step-desklet`
   - Launcher script that activates local venv and runs `main.py`.
+- `stt.py`
+  - WAV-to-text transcription helper used by voice mode (`AssemblyAI` streaming SDK).
+- `voice.py`
+  - Standalone NVIDIA TTS voice/style test script (includes energetic voice mapping).
 - `README.md`
   - This documentation.
 
@@ -170,6 +202,8 @@ step_desklet_project/
   - Subpackage marker (empty).
 - `step_desklet/core/config.py`
   - Config defaults, persistence, instance CRUD.
+- `step_desklet/core/voice_mode.py`
+  - Global push-to-talk capture, recording, STT orchestration, and TTS playback controller.
 - `step_desklet/core/worker.py`
   - Model request loop and shell command execution.
 - `step_desklet/system/__init__.py`
@@ -190,7 +224,7 @@ step_desklet_project/
   - Not source code; typically excluded from Git.
 
 ## Requirements
-ZYLO-SYSTEM-COMMAND-DESKLET assumes a Linux desktop session (X11 currently gets the best results, Wayland support is limited to default Qt behavior).  
+ZYLO-SYSTEM-COMMAND-DESKLET assumes a Linux desktop session (X11 gives the most complete experience for global hotkeys).  
 ### Python
 - Python 3.10+ is required for `PyQt6` and modern typing.  
 - System `python3 -m venv` capability is necessary for the bundled `install.sh`.  
@@ -199,13 +233,27 @@ ZYLO-SYSTEM-COMMAND-DESKLET assumes a Linux desktop session (X11 currently gets 
 - `openai`
 - `python-dotenv`
 - `requests`
+- `assemblyai`
+- `pynput`
 ### Desktop Tooling
 - `wmctrl` and `xprop` are optional but strongly recommended to keep the desklet visible when invoking “Show Desktop” or similar workspace toggles.  
 - Without them, the widget still runs, but it might behave like a regular application window during workspace changes.  
+- For global `Ctrl+M` fallback on X11, install `xinput` and `xmodmap`.
+- For voice recording/playback, install at least one recorder backend (`arecord` or `ffmpeg`) and `ffplay` for TTS playback.
+
+### Environment Variables
+- `NVIDIA_API_KEY`: command engine API key (and fallback for TTS when `NVIDIA_TTS_API_KEY` is not set).
+- `ASSEMBLYAI_API_KEY`: STT API key used by `stt.py`.
+- `NVIDIA_TTS_TALK_SCRIPT`: optional explicit path to NVIDIA `python-clients/scripts/tts/talk.py`.
+- `NVIDIA_TTS_API_KEY`: optional dedicated key for TTS calls.
+
 ### Debian/Ubuntu Example
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv wmctrl x11-utils
+sudo apt install -y \
+  python3 python3-venv \
+  wmctrl x11-utils x11-xserver-utils xinput \
+  alsa-utils ffmpeg
 ```
 
 ## Install
@@ -224,20 +272,20 @@ cd /home/ujan/Desktop/CUSAI/step_desklet_project
 
 Inspect the script before running it to confirm nothing unexpected happens.
 
-### API KEY:
-Replace `paste_your_api_key` of `step_desklet_project/step_desklet/ui/desklet.py` with your actual api key generated from [NVIDIA NIM website](https://build.nvidia.com/settings/api-keys) for **free**.
-
-```python
-
-        # Build Worker
-        api_key = os.getenv("NVIDIA_API_KEY") or config.get("api_key") or "paste_your_api_key"
-        self.worker = StepAIWorker(
-            api_key=api_key,
-            base_url=config.get("base_url", "https://integrate.api.nvidia.com/v1"),
-            model=config.get("model", "stepfun-ai/step-3.5-flash")
-        )
-
+### API Keys
+Recommended approach:
+```bash
+export NVIDIA_API_KEY="<your_nvidia_key>"
+export ASSEMBLYAI_API_KEY="<your_assemblyai_key>"
 ```
+
+Optional for TTS:
+```bash
+export NVIDIA_TTS_API_KEY="<optional_tts_key>"
+export NVIDIA_TTS_TALK_SCRIPT="/absolute/path/to/python-clients/scripts/tts/talk.py"
+```
+
+Do not edit keys directly into source files; use environment variables or per-instance config.
 
 ## Run and CLI Options
 ### Preferred Startup
@@ -263,14 +311,24 @@ python3 main.py
 ## User Interaction Model
 The desklet keeps user interaction lightweight while still giving you full control over layout and lifecycle.  
 ### In-Widget Controls
-- **Header:** bold “Step-3.5” label announces the active assistant.  
-- **Reset button (↺):** clears the response/status text and brings focus back to the input.  
+- **Header:** bold `ZYLO AI` label announces the active assistant.  
+- **Voice button (🔈/🔊):** sits left of reset; toggles voice mode on/off.
+- **Reset button (↺):** clears response/status text and restores neutral typed-mode UI.
 - **Lock button (🔒/🔓):** toggles `is_locked`, preventing move/resize actions when enabled.  
 ### Input Flow and Status
 1. Type a request into the `Command Guardian...` field and press Enter.  
 2. The widget disables the input and shows a status label (“Thinking…” or “Executing: …”) while the worker processes the call.  
 3. If a response completes, it appears in the text area with auto-grow behavior; if an error occurs, the answer turns red.  
 4. The input re-enables once the operation finishes, so you can continue conversing.  
+
+### Voice Mode Flow
+1. Click the voice button to enable voice mode (input/response box is hidden).
+2. Hold global `Ctrl+M` from any window to start recording.
+3. Release `Ctrl` or `M` to stop recording and process speech.
+4. STT transcript is sent to the same `step-3.5-flash` command engine used by typed mode.
+5. The final reply is not shown in the response box; it is spoken via NVIDIA TTS.
+6. Desklet border animates while listening/speaking and returns to idle when done.
+
 ### Context Menu
 - `Add New Desklet` (spawns another instance).  
 - `Lock/Unlock Position` (mirrors the header button).  
@@ -364,6 +422,30 @@ Minimum hardening before serious use:
 - Validate `base_url` and `model` entries inside configs; a typo prevents successful HTTP calls.
 - Monitor the terminal where `step-desklet` runs for exception tracebacks from `openai.OpenAI`.
 
+### Voice mode does not react to `Ctrl+M`
+- Wayland sessions can block global key hooks; use X11 for reliable global push-to-talk.
+- Install `pynput` (already in `requirements.txt`) and X11 fallback tools (`xinput`, `xmodmap`).
+- If voice mode reports unavailable backend, run from terminal and inspect startup errors.
+
+### Voice mode gets stuck at `Transcribing...`
+- Verify `ASSEMBLYAI_API_KEY` is valid and has quota.
+- Confirm recorder backend is available (`arecord` or `ffmpeg`).
+- Check microphone permissions and that recorded temp WAV files are being created.
+
+### TTS fails or no audio plays
+- Ensure `NVIDIA_TTS_TALK_SCRIPT` points to `python-clients/scripts/tts/talk.py` if auto-detection fails.
+- Verify `NVIDIA_API_KEY`/`NVIDIA_TTS_API_KEY` is valid for TTS endpoint access.
+- Ensure `ffplay` is installed (`ffmpeg` package on Debian/Ubuntu).
+
+### `Executing: ...` persists after app/file already opens
+- Restart the desklet to load latest worker logic:
+```bash
+pkill -f "^python3 /home/ujan/Desktop/CUSAI/step_desklet_project/main.py" || true
+cd /home/ujan/Desktop/CUSAI/step_desklet_project
+nohup ./step-desklet --no-autostart >/tmp/step-desklet.log 2>&1 &
+```
+- Open intents now short-circuit to completion after successful launch, but old running processes keep old behavior until restart.
+
 ### UI appears but actions silently fail
 - Launch via terminal to catch PyQt6 warnings/exceptions:
 ```bash
@@ -456,5 +538,3 @@ Creator of the ZYLO ecosystem
 
 ## Final Note
 If this project helps you build smarter desktop workflows, consider starring ⭐ the repo — it helps visibility and future development.
-
-
