@@ -27,3 +27,4 @@ class DeskletManager(QObject):
             self.desklets[instance_id].close()
             del self.desklets[instance_id]
             remove_instance(instance_id)
+
