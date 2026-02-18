@@ -31,3 +31,4 @@ StartupNotify=false
 def remove_autostart():
     if os.path.exists(DESKTOP_ENTRY_FILE):
         os.remove(DESKTOP_ENTRY_FILE)
+
