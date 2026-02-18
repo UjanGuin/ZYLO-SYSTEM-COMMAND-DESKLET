@@ -19,6 +19,8 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "base_url": "https://integrate.api.nvidia.com/v1",
             "model": "stepfun-ai/step-3.5-flash",
+            "working_dir": "/",
+            "sudo_password": "././././",
         }
     ]
 }
@@ -76,6 +78,8 @@ def add_instance() -> Dict[str, Any]:
         "api_key": "",
         "base_url": "https://integrate.api.nvidia.com/v1",
         "model": "stepfun-ai/step-3.5-flash",
+        "working_dir": "/",
+        "sudo_password": "././././",
     }
     configs["instances"].append(new_inst)
     save_configs(configs)
@@ -86,3 +90,4 @@ def remove_instance(instance_id: str):
     configs = load_configs()
     configs["instances"] = [inst for inst in configs["instances"] if inst.get("id") != instance_id]
     save_configs(configs)
+
