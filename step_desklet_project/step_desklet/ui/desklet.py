@@ -5,11 +5,12 @@ import subprocess
 from typing import Optional, Dict, List, Any
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLineEdit, QLabel, QTextEdit, 
-    QFrame, QHBoxLayout, QMenu, QToolButton
+    QFrame, QHBoxLayout, QMenu, QToolButton, QGraphicsDropShadowEffect
 )
-from PyQt6.QtCore import Qt, QPoint, QTimer, QEvent
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import Qt, QPoint, QTimer, QEvent, QVariantAnimation
+from PyQt6.QtGui import QAction, QColor
 from ..core.worker import StepAIWorker
+from ..core.voice_mode import VoiceModeController
 from ..core.config import update_instance
 
 class StepDesklet(QWidget):
@@ -31,23 +32,52 @@ class StepDesklet(QWidget):
         self.drag_pos = QPoint()
         self.response_min_height = 18
         self.response_max_height = 420
+        self.voice_mode_enabled = False
+        self._listening = False
+        self._speaking = False
 
         # Build Worker
-        api_key = os.getenv("NVIDIA_API_KEY") or config.get("api_key") or "paste_your_api_key"
+        api_key = os.getenv("NVIDIA_API_KEY") or config.get("api_key") or "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"
+        sudo_password = os.getenv("STEP_DESKLET_SUDO_PASSWORD") or config.get("sudo_password", "")
+        working_dir = os.getenv("STEP_DESKLET_WORKING_DIR") or config.get("working_dir", "/")
+        base_url = config.get("base_url", "https://integrate.api.nvidia.com/v1")
+        model = config.get("model", "stepfun-ai/step-3.5-flash")
         self.worker = StepAIWorker(
             api_key=api_key,
-            base_url=config.get("base_url", "https://integrate.api.nvidia.com/v1"),
-            model=config.get("model", "stepfun-ai/step-3.5-flash")
+            base_url=base_url,
+            model=model,
+            sudo_password=sudo_password,
+            initial_working_dir=working_dir,
+        )
+        self.voice_controller = VoiceModeController(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            sudo_password=sudo_password,
+            initial_working_dir=working_dir,
         )
         self.worker.signals.response_ready.connect(self.update_response)
         self.worker.signals.status_update.connect(self.update_status)
         self.worker.signals.error_occurred.connect(self.update_error)
         self.worker.signals.clearing_response.connect(self.clear_display)
+        self.voice_controller.signals.status_update.connect(self._update_voice_status)
+        self.voice_controller.signals.error_occurred.connect(self._update_voice_error)
+        self.voice_controller.signals.recording_state_changed.connect(self._handle_recording_state)
+        self.voice_controller.signals.transcript_ready.connect(self._handle_voice_transcript)
+        self.voice_controller.signals.reply_ready.connect(self._handle_voice_reply)
+        self.voice_controller.signals.speaking_state_changed.connect(self._handle_speaking_state)
 
         self.geometry_save_timer = QTimer(self)
         self.geometry_save_timer.setSingleShot(True)
         self.geometry_save_timer.setInterval(140)
         self.geometry_save_timer.timeout.connect(self._persist_geometry)
+        self.response_clear_timer = QTimer(self)
+        self.response_clear_timer.setSingleShot(True)
+        self.response_clear_timer.timeout.connect(self._auto_clear_response)
+        self.response_clear_base_ms = 3500
+        self.response_clear_per_word_ms = 220
+        self.response_clear_min_ms = 6000
+        self.response_clear_max_ms = 120000
         self.init_ui()
         self.apply_desklet_hints()
 
@@ -73,13 +103,28 @@ class StepDesklet(QWidget):
         # Main Container
         self.container = QFrame(self)
         self.container.setObjectName("DeskletBody")
-        self.container.setStyleSheet("""
-            #DeskletBody {
-                background-color: rgba(10, 10, 15, 245);
-                border: 2px solid #00d4ff;
-                border-radius: 14px;
-            }
-        """)
+        self.glow_effect = QGraphicsDropShadowEffect(self.container)
+        self.glow_effect.setOffset(0, 0)
+        self.glow_effect.setBlurRadius(0)
+        self.glow_effect.setColor(QColor(0, 212, 255, 0))
+        self.container.setGraphicsEffect(self.glow_effect)
+
+        self.speaking_glow_anim = QVariantAnimation(self)
+        self.speaking_glow_anim.setStartValue(0.0)
+        self.speaking_glow_anim.setKeyValueAt(0.5, 1.0)
+        self.speaking_glow_anim.setEndValue(0.0)
+        self.speaking_glow_anim.setDuration(880)
+        self.speaking_glow_anim.setLoopCount(-1)
+        self.speaking_glow_anim.valueChanged.connect(self._update_speaking_glow)
+
+        self.listening_glow_anim = QVariantAnimation(self)
+        self.listening_glow_anim.setStartValue(0.0)
+        self.listening_glow_anim.setKeyValueAt(0.5, 1.0)
+        self.listening_glow_anim.setEndValue(0.0)
+        self.listening_glow_anim.setDuration(620)
+        self.listening_glow_anim.setLoopCount(-1)
+        self.listening_glow_anim.valueChanged.connect(self._update_listening_glow)
+        self._apply_container_style()
         
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -93,7 +138,7 @@ class StepDesklet(QWidget):
         # Header Row
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-        self.header = QLabel("ZYLO-SYSTEM-COMMAND-DESKLET")
+        self.header = QLabel("ZYLO AI")
         self.header.setStyleSheet("font-size: 18px; font-weight: 900; color: #00d4ff; background: transparent;")
         header_layout.addWidget(self.header)
         header_layout.addStretch(1)
@@ -121,6 +166,14 @@ class StepDesklet(QWidget):
         self.reset_btn.setToolTip("Reset")
         self.reset_btn.setFixedSize(18, 18)
         self.reset_btn.clicked.connect(self.reset_ui)
+        self.voice_btn = QToolButton(self)
+        self.voice_btn.setText("🔈")
+        self.voice_btn.setStyleSheet(icon_btn_style)
+        self.voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.voice_btn.setToolTip("Voice mode OFF")
+        self.voice_btn.setFixedSize(18, 18)
+        self.voice_btn.clicked.connect(self.toggle_voice_mode)
+        btn_layout.addWidget(self.voice_btn)
         btn_layout.addWidget(self.reset_btn)
 
         self.lock_btn = QToolButton(self)
@@ -249,9 +302,45 @@ class StepDesklet(QWidget):
         menu.exec(self.mapToGlobal(pos))
 
     def reset_ui(self):
+        self.response_clear_timer.stop()
         self.response_area.clear()
         self.response_area.hide()
         self.status_label.hide()
+        self.input_box.setEnabled(not self.voice_mode_enabled)
+        if self.voice_mode_enabled:
+            self.input_box.hide()
+        else:
+            self.input_box.show()
+            self.input_box.setFocus()
+        self._adjust_after_content_change(allow_shrink=True)
+
+    def toggle_voice_mode(self):
+        new_state = not self.voice_mode_enabled
+        if new_state:
+            if not self.voice_controller.set_enabled(True):
+                return
+            self.voice_mode_enabled = True
+            self.voice_btn.setText("🔊")
+            self.voice_btn.setToolTip("Voice mode ON (hold Ctrl+M)")
+            self.response_clear_timer.stop()
+            self.response_area.hide()
+            self.status_label.setText("Voice mode ON. Hold Ctrl+M to talk.")
+            self.status_label.show()
+            self.input_box.hide()
+            self.input_box.setEnabled(False)
+            self._adjust_after_content_change(allow_shrink=True)
+            return
+
+        self.voice_controller.set_enabled(False)
+        self.voice_mode_enabled = False
+        self.voice_btn.setText("🔈")
+        self.voice_btn.setToolTip("Voice mode OFF")
+        self._stop_listening_animation()
+        self._stop_speaking_animation()
+        self.response_clear_timer.stop()
+        self.response_area.hide()
+        self.status_label.hide()
+        self.input_box.show()
         self.input_box.setEnabled(True)
         self.input_box.setFocus()
         self._adjust_after_content_change(allow_shrink=True)
@@ -327,13 +416,19 @@ class StepDesklet(QWidget):
         self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def send_message(self):
+        if self.voice_mode_enabled:
+            return
         text = self.input_box.text().strip()
         if not text: return
+        self.response_clear_timer.stop()
         self.input_box.clear()
         self.input_box.setEnabled(False)
         threading.Thread(target=self.worker.process_request, args=(text,), daemon=True).start()
 
     def clear_display(self):
+        if self.voice_mode_enabled:
+            return
+        self.response_clear_timer.stop()
         self.response_area.clear()
         self.response_area.setFixedHeight(self.response_min_height)
         self.response_area.hide()
@@ -342,6 +437,8 @@ class StepDesklet(QWidget):
         self._adjust_after_content_change(allow_shrink=True)
 
     def update_status(self, status: str):
+        if self.voice_mode_enabled:
+            return
         if status:
             self.status_label.setText(status)
             self.status_label.show()
@@ -350,23 +447,155 @@ class StepDesklet(QWidget):
         self._adjust_after_content_change(allow_shrink=True)
 
     def update_response(self, response: str):
+        if self.voice_mode_enabled:
+            return
         self.response_area.setMarkdown(response)
         self.response_area.show()
         self.status_label.hide()
         self.input_box.setEnabled(True)
         self.input_box.setFocus()
+        self._schedule_response_autoclear(response)
         QTimer.singleShot(0, self._finalize_output_layout)
 
     def update_error(self, error: str):
+        if self.voice_mode_enabled:
+            return
+        self.response_clear_timer.stop()
         self.response_area.setHtml(f"<font color='#ff4d6d'>Error: {error}</font>")
         self.response_area.show()
         self.status_label.hide()
         self.input_box.setEnabled(True)
         QTimer.singleShot(0, self._finalize_output_layout)
 
+    def _update_voice_status(self, status: str):
+        if not self.voice_mode_enabled:
+            return
+        base_tip = "Voice mode ON (hold Ctrl+M)"
+        self.voice_btn.setToolTip(base_tip if not status else f"{base_tip}\n{status}")
+        if status:
+            self.status_label.setText(status)
+        else:
+            self.status_label.setText("Voice mode ON. Hold Ctrl+M to talk.")
+        self.status_label.show()
+        self._adjust_after_content_change(allow_shrink=True)
+
+    def _update_voice_error(self, error: str):
+        mode_text = "ON (hold Ctrl+M)" if self.voice_mode_enabled else "OFF"
+        self.voice_btn.setToolTip(f"Voice mode {mode_text}\nError: {error}")
+        if self.voice_mode_enabled:
+            self.status_label.setText(f"Error: {error}")
+            self.status_label.show()
+            self._adjust_after_content_change(allow_shrink=True)
+
+    def _short_preview(self, text: str, max_len: int = 90) -> str:
+        clean = " ".join((text or "").split())
+        if len(clean) <= max_len:
+            return clean
+        return clean[: max_len - 3].rstrip() + "..."
+
+    def _handle_voice_transcript(self, transcript: str):
+        if not self.voice_mode_enabled:
+            return
+        preview = self._short_preview(transcript)
+        self.status_label.setText(
+            f'STT detected: "{preview}"\nSending to step-3.5-flash...'
+        )
+        self.status_label.show()
+        self._adjust_after_content_change(allow_shrink=True)
+
+    def _handle_voice_reply(self, reply: str):
+        if not self.voice_mode_enabled:
+            return
+        preview = self._short_preview(reply)
+        self.status_label.setText(
+            f'step-3.5-flash replied: "{preview}"\nSpeaking out...'
+        )
+        self.status_label.show()
+        self._adjust_after_content_change(allow_shrink=True)
+
+    def _handle_recording_state(self, recording: bool):
+        if recording:
+            self._start_listening_animation()
+        else:
+            self._stop_listening_animation()
+
+    def _handle_speaking_state(self, speaking: bool):
+        if speaking:
+            self._start_speaking_animation()
+        else:
+            self._stop_speaking_animation()
+
     def _finalize_output_layout(self):
         self._update_response_height()
         self._adjust_after_content_change(allow_shrink=False)
+
+    def _apply_container_style(self, border_color: Optional[QColor] = None, border_width: int = 2):
+        color = border_color or QColor(0, 212, 255, 255)
+        self.container.setStyleSheet(
+            f"""
+            #DeskletBody {{
+                background-color: rgba(10, 10, 15, 245);
+                border: {border_width}px solid rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()});
+                border-radius: 14px;
+            }}
+            """
+        )
+
+    def _update_speaking_glow(self, value):
+        if not self._speaking:
+            return
+        pulse = float(value)
+        border_color = QColor(0, min(255, 212 + int(36 * pulse)), 255, min(255, 190 + int(60 * pulse)))
+        border_width = 2 + int(round(pulse * 2))
+        self._apply_container_style(border_color, border_width)
+        self.glow_effect.setBlurRadius(12 + (30 * pulse))
+        self.glow_effect.setColor(QColor(0, 212, 255, min(255, 110 + int(110 * pulse))))
+
+    def _update_listening_glow(self, value):
+        if not self._listening or self._speaking:
+            return
+        pulse = float(value)
+        border_color = QColor(0, min(255, 235 + int(20 * pulse)), min(255, 170 + int(70 * pulse)), min(255, 180 + int(70 * pulse)))
+        border_width = 2 + int(round(pulse * 2))
+        self._apply_container_style(border_color, border_width)
+        self.glow_effect.setBlurRadius(10 + (20 * pulse))
+        self.glow_effect.setColor(QColor(0, 255, 190, min(255, 95 + int(105 * pulse))))
+
+    def _start_speaking_animation(self):
+        if self._speaking:
+            return
+        if self._listening:
+            self._stop_listening_animation()
+        self._speaking = True
+        self.speaking_glow_anim.start()
+
+    def _stop_speaking_animation(self):
+        self._speaking = False
+        self.speaking_glow_anim.stop()
+        self._clear_voice_effect_if_idle()
+
+    def _start_listening_animation(self):
+        if self._listening:
+            return
+        if self._speaking:
+            return
+        self._listening = True
+        self.voice_btn.setText("🎙")
+        self.listening_glow_anim.start()
+
+    def _stop_listening_animation(self):
+        self._listening = False
+        self.listening_glow_anim.stop()
+        if self.voice_mode_enabled:
+            self.voice_btn.setText("🔊")
+        self._clear_voice_effect_if_idle()
+
+    def _clear_voice_effect_if_idle(self):
+        if self._listening or self._speaking:
+            return
+        self.glow_effect.setBlurRadius(0)
+        self.glow_effect.setColor(QColor(0, 212, 255, 0))
+        self._apply_container_style()
 
     def _adjust_after_content_change(self, allow_shrink: bool):
         """Keep current width, but always grow height to fit dynamic response/status content."""
@@ -395,6 +624,20 @@ class StepDesklet(QWidget):
         if self.response_area.height() != target_height:
             self.response_area.setFixedHeight(target_height)
 
+    def _schedule_response_autoclear(self, response: str):
+        word_count = len(response.split())
+        delay_ms = self.response_clear_base_ms + (word_count * self.response_clear_per_word_ms)
+        delay_ms = max(self.response_clear_min_ms, min(self.response_clear_max_ms, delay_ms))
+        self.response_clear_timer.start(delay_ms)
+
+    def _auto_clear_response(self):
+        if not self.response_area.isVisible():
+            return
+        self.response_area.clear()
+        self.response_area.setFixedHeight(self.response_min_height)
+        self.response_area.hide()
+        self._adjust_after_content_change(allow_shrink=True)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_response_height()
@@ -419,7 +662,11 @@ class StepDesklet(QWidget):
                 QTimer.singleShot(0, self._ensure_visible)
 
     def closeEvent(self, event):
+        self.voice_controller.shutdown()
+        self._stop_listening_animation()
+        self._stop_speaking_animation()
         self.geometry_save_timer.stop()
+        self.response_clear_timer.stop()
         self._persist_geometry()
         self._is_closing = True
         super().closeEvent(event)
@@ -454,3 +701,4 @@ class StepDesklet(QWidget):
             pos.x() >= self.width() - self.resize_margin
             and pos.y() >= self.height() - self.resize_margin
         )
+
