@@ -216,16 +216,36 @@ class GroqChatClient:
                     "name": "zylo_action",
                     "strict": True,
                     "schema": {
-                        "type": "object",
-                        "properties": {
-                            "mode": {"type": "string", "enum": ["run", "search", "final"]},
-                            "command": {"type": "string"},
-                            "reason": {"type": "string"},
-                            "query": {"type": "string"},
-                            "message": {"type": "string"},
-                        },
-                        "required": ["mode", "command", "reason", "query", "message"],
-                        "additionalProperties": False,
+                        "anyOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "mode": {"type": "string", "enum": ["run"]},
+                                    "command": {"type": "string"},
+                                    "reason": {"type": "string"},
+                                },
+                                "required": ["mode", "command", "reason"],
+                                "additionalProperties": False,
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "mode": {"type": "string", "enum": ["search"]},
+                                    "query": {"type": "string"},
+                                },
+                                "required": ["mode", "query"],
+                                "additionalProperties": False,
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "mode": {"type": "string", "enum": ["final"]},
+                                    "message": {"type": "string"},
+                                },
+                                "required": ["mode", "message"],
+                                "additionalProperties": False,
+                            },
+                        ],
                     },
                 },
             },
