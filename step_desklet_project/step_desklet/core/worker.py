@@ -204,15 +204,31 @@ class GroqChatClient:
             "model": model or GROQ_MODEL,
             "messages": messages,
             "temperature": 1,
-            # GPT-OSS spends a substantial part of this budget on internal reasoning.
-            # A 2048-token cap can therefore end before any user-facing content is emitted.
-            "max_completion_tokens": 8192,
+            "max_completion_tokens": 2048,
             "top_p": 1,
             "reasoning_effort": "medium",
             # GPT-OSS returns reasoning separately from answer content. Hide reasoning
             # and request one complete JSON response so the assistant text is reliable.
             "include_reasoning": False,
-            "response_format": {"type": "json_object"},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "zylo_action",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "mode": {"type": "string", "enum": ["run", "search", "final"]},
+                            "command": {"type": "string"},
+                            "reason": {"type": "string"},
+                            "query": {"type": "string"},
+                            "message": {"type": "string"},
+                        },
+                        "required": ["mode", "command", "reason", "query", "message"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
             "stream": False,
             "stop": None,
         }
