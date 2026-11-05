@@ -218,11 +218,17 @@ class GroqChatClient:
             # GPT-OSS returns reasoning separately from answer content. Hide reasoning
             # and request one complete JSON response so the assistant text is reliable.
             "include_reasoning": False,
+            # This app handles its own actions from JSON text; Groq hosted tools are
+            # not part of the desklet protocol. JSON object mode keeps GPT-OSS from
+            # trying to emit a built-in tool call instead of the action message.
+            "tool_choice": "none",
+            "response_format": {"type": "json_object"},
             "stream": False,
             "stop": None,
         }
-        response = None
-        for attempt in range(3):
+        rate_retries = 0
+        tool_retries = 0
+        while True:
             try:
                 response = requests.post(
                     GROQ_API_URL, headers=headers, json=payload, stream=False, timeout=(10, 180)
@@ -234,14 +240,33 @@ class GroqChatClient:
             error = _api_error(response, "Groq")
             response.close()
             if (
-                attempt < 2
+                rate_retries < 2
                 and isinstance(error, ProviderRateLimitError)
                 and error.retry_after is not None
                 and 0 < error.retry_after <= 60
             ):
+                rate_retries += 1
                 if status_callback:
                     status_callback(f"Waiting for Groq quota ({int(error.retry_after + 0.999)}s)…")
                 time.sleep(error.retry_after + 0.2)
+                continue
+            error_text = str(error).lower()
+            if (
+                tool_retries < 1
+                and "tool choice is none" in error_text
+                and "model called a tool" in error_text
+            ):
+                tool_retries += 1
+                payload["temperature"] = 0.2
+                payload["messages"] = list(messages) + [{
+                    "role": "user",
+                    "content": (
+                        "Retry this response as JSON text in the message body. Do not call, "
+                        "request, or mention any tools. Follow the required JSON action format."
+                    ),
+                }]
+                if status_callback:
+                    status_callback("Retrying Groq without tool calls…")
                 continue
             raise error
         try:
@@ -254,6 +279,39 @@ class GroqChatClient:
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("Groq returned an unexpected completion response.") from exc
         if not content:
+            message = choice.get("message", {})
+            if (
+                tool_retries < 1
+                and (choice.get("finish_reason") == "tool_calls" or message.get("tool_calls"))
+            ):
+                payload["temperature"] = 0.2
+                payload["messages"] = list(messages) + [{
+                    "role": "user",
+                    "content": (
+                        "Your previous response attempted a tool call. Return the required "
+                        "JSON action directly as message text; do not call any tools."
+                    ),
+                }]
+                if status_callback:
+                    status_callback("Retrying Groq without tool calls…")
+                retry_response = requests.post(
+                    GROQ_API_URL, headers=headers, json=payload, stream=False, timeout=(10, 180)
+                )
+                if not retry_response.ok:
+                    retry_error = _api_error(retry_response, "Groq")
+                    retry_response.close()
+                    raise retry_error
+                try:
+                    retry_body = retry_response.json()
+                finally:
+                    retry_response.close()
+                try:
+                    retry_choice = retry_body["choices"][0]
+                    retry_content = _content_text(retry_choice.get("message", {}).get("content")).strip()
+                except (KeyError, IndexError, TypeError) as exc:
+                    raise RuntimeError("Groq returned an unexpected completion response.") from exc
+                if retry_content:
+                    return retry_content
             if choice.get("finish_reason") == "length":
                 raise RuntimeError("Groq reached its output limit before returning answer text. Try a shorter request.")
             raise RuntimeError("Groq returned an empty response.")
