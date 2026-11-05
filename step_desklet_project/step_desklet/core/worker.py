@@ -216,36 +216,16 @@ class GroqChatClient:
                     "name": "zylo_action",
                     "strict": True,
                     "schema": {
-                        "anyOf": [
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "mode": {"type": "string", "enum": ["run"]},
-                                    "command": {"type": "string"},
-                                    "reason": {"type": "string"},
-                                },
-                                "required": ["mode", "command", "reason"],
-                                "additionalProperties": False,
-                            },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "mode": {"type": "string", "enum": ["search"]},
-                                    "query": {"type": "string"},
-                                },
-                                "required": ["mode", "query"],
-                                "additionalProperties": False,
-                            },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "mode": {"type": "string", "enum": ["final"]},
-                                    "message": {"type": "string"},
-                                },
-                                "required": ["mode", "message"],
-                                "additionalProperties": False,
-                            },
-                        ],
+                        "type": "object",
+                        "properties": {
+                            "mode": {"type": "string", "enum": ["run", "search", "final"]},
+                            "command": {"type": ["string", "null"]},
+                            "reason": {"type": ["string", "null"]},
+                            "query": {"type": ["string", "null"]},
+                            "message": {"type": ["string", "null"]},
+                        },
+                        "required": ["mode", "command", "reason", "query", "message"],
+                        "additionalProperties": False,
                     },
                 },
             },
@@ -302,6 +282,7 @@ Response protocol (STRICT):
   {"mode":"search","query":"<focused web search query>"}
 - If the task is complete or no command is needed, respond with JSON only:
   {"mode":"final","message":"<answer to user>"}
+- For Groq's structured response, always include all five keys: mode, command, reason, query, and message. Set unused fields to null.
 
 Rules:
 - One command at a time.
@@ -531,7 +512,7 @@ class StepAIWorker(QObject):
 
             mode = action.get("mode")
             if mode == "final":
-                final_message = str(action.get("message", ""))
+                final_message = str(action.get("message") or "")
                 if not final_message.strip():
                     request_messages.append({
                         "role": "user",
@@ -544,7 +525,7 @@ class StepAIWorker(QObject):
                 return final_message
 
             if mode == "search":
-                query = str(action.get("query", "")).strip()
+                query = str(action.get("query") or "").strip()
                 if not query:
                     raise RuntimeError("The model requested web search without a query.")
                 if status_callback:
@@ -563,8 +544,8 @@ class StepAIWorker(QObject):
                 continue
 
             if mode == "run":
-                command = str(action.get("command", "")).strip()
-                reason = str(action.get("reason", "")).strip()
+                command = str(action.get("command") or "").strip()
+                reason = str(action.get("reason") or "").strip()
                 if status_callback:
                     status_callback(f"Executing: {reason}")
 
