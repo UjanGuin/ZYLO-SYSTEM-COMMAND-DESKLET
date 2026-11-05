@@ -14,6 +14,51 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "openai/gpt-oss-120b"
 
 
+def _api_error(response: requests.Response, provider: str) -> RuntimeError:
+    """Build a useful provider error without exposing request headers or keys."""
+    detail = ""
+    try:
+        body = response.json()
+        error = body.get("error", body) if isinstance(body, dict) else body
+        if isinstance(error, dict):
+            detail = str(error.get("message") or error.get("detail") or "")
+        elif isinstance(error, str):
+            detail = error
+    except (ValueError, requests.RequestException):
+        detail = response.text.strip()
+    if detail:
+        detail = re.sub(r"\s+", " ", detail)[:500]
+    status = response.status_code
+    if not detail:
+        detail = response.reason or "The provider returned an error."
+    if status == 401 or status == 403:
+        detail = f"API key or model access was rejected (HTTP {status}). {detail}"
+    elif status == 429:
+        detail = f"Rate limit or provider quota reached (HTTP 429). {detail}"
+    elif status >= 500:
+        detail = f"{provider} is temporarily unavailable (HTTP {status}). {detail}"
+    else:
+        detail = f"HTTP {status}. {detail}"
+    return RuntimeError(f"{provider} request failed: {detail}")
+
+
+def _content_text(content: Any) -> str:
+    """Normalize OpenAI-compatible message content, including text-part arrays."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                value = part.get("text") or part.get("content")
+                if isinstance(value, str):
+                    parts.append(value)
+        return "".join(parts)
+    return ""
+
+
 class NIMChatClient:
     """Requests-based NVIDIA NIM chat client with streamed SSE collection."""
 
@@ -60,7 +105,10 @@ class NIMChatClient:
                 stream=stream,
                 timeout=(10, 180),
             )
-            response.raise_for_status()
+            if not response.ok:
+                error = _api_error(response, "NVIDIA NIM")
+                response.close()
+                raise error
         except requests.RequestException as exc:
             raise RuntimeError(f"NVIDIA NIM request failed: {exc}") from exc
 
@@ -95,6 +143,8 @@ class NIMChatClient:
                             for part in content
                             if isinstance(part, dict) and part.get("type") in {"text", "output_text"}
                         )
+        except RuntimeError:
+            raise
         except requests.RequestException as exc:
             raise RuntimeError(f"NVIDIA NIM stream interrupted: {exc}") from exc
         finally:
@@ -108,11 +158,16 @@ class NIMChatClient:
     @staticmethod
     def _extract_non_stream_content(payload: Dict[str, Any]) -> str:
         try:
-            content = payload["choices"][0]["message"]["content"]
+            choice = payload["choices"][0]
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("NVIDIA NIM returned an unexpected response.") from exc
-        if isinstance(content, str) and content.strip():
-            return content.strip()
+        message = choice.get("message", {})
+        content = _content_text(message.get("content")).strip()
+        if content:
+            return content
+        finish_reason = choice.get("finish_reason")
+        if finish_reason == "length":
+            raise RuntimeError("NVIDIA NIM used its response limit before returning answer text. Try a shorter request.")
         raise RuntimeError("NVIDIA NIM returned an empty response.")
 
 
@@ -133,7 +188,9 @@ class GroqChatClient:
             "model": model or GROQ_MODEL,
             "messages": messages,
             "temperature": 1,
-            "max_completion_tokens": 2048,
+            # GPT-OSS spends a substantial part of this budget on internal reasoning.
+            # A 2048-token cap can therefore end before any user-facing content is emitted.
+            "max_completion_tokens": 8192,
             "top_p": 1,
             "reasoning_effort": "medium",
             "stream": True,
@@ -143,11 +200,15 @@ class GroqChatClient:
             response = requests.post(
                 GROQ_API_URL, headers=headers, json=payload, stream=True, timeout=(10, 180)
             )
-            response.raise_for_status()
+            if not response.ok:
+                error = _api_error(response, "Groq")
+                response.close()
+                raise error
         except requests.RequestException as exc:
             raise RuntimeError(f"Groq request failed: {exc}") from exc
 
         chunks: List[str] = []
+        finish_reason = None
         try:
             for line in response.iter_lines():
                 if not line:
@@ -161,16 +222,26 @@ class GroqChatClient:
                     event = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+                if event.get("error"):
+                    error = event["error"]
+                    detail = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+                    raise RuntimeError(f"Groq stream error: {detail}")
                 for choice in event.get("choices", []):
-                    content = choice.get("delta", {}).get("content")
-                    if isinstance(content, str):
+                    delta = choice.get("delta", {})
+                    content = _content_text(delta.get("content"))
+                    if content:
                         chunks.append(content)
+                    finish_reason = choice.get("finish_reason") or finish_reason
+        except RuntimeError:
+            raise
         except requests.RequestException as exc:
             raise RuntimeError(f"Groq stream interrupted: {exc}") from exc
         finally:
             response.close()
         content = "".join(chunks).strip()
         if not content:
+            if finish_reason == "length":
+                raise RuntimeError("Groq reached its output limit before returning answer text. Try a shorter request.")
             raise RuntimeError("Groq returned an empty response.")
         return content
 
@@ -369,12 +440,22 @@ class StepAIWorker(QObject):
                 self._trim_history()
                 request_messages = self.messages
 
-            raw = self.client.complete(
-                model=self.model,
-                messages=request_messages,
-                temperature=response_temperature,
-                max_tokens=4096,
-            )
+            for attempt in range(2):
+                try:
+                    raw = self.client.complete(
+                        model=self.model,
+                        messages=request_messages,
+                        temperature=response_temperature,
+                        max_tokens=4096,
+                    )
+                    break
+                except RuntimeError as exc:
+                    # Providers occasionally complete a request without emitting message
+                    # text. Retry that transient case once; don't repeat auth/quota errors.
+                    if attempt or "empty response" not in str(exc).lower():
+                        raise
+                    if status_callback:
+                        status_callback("Retrying an empty model response…")
             if not raw:
                 request_messages.append(
                     {
@@ -406,6 +487,14 @@ class StepAIWorker(QObject):
             mode = action.get("mode")
             if mode == "final":
                 final_message = str(action.get("message", ""))
+                if not final_message.strip():
+                    request_messages.append({
+                        "role": "user",
+                        "content": "Your final message was empty. Return a concise, useful answer in the required JSON format.",
+                    })
+                    if not short_context_intent:
+                        self.messages = request_messages
+                    continue
                 self._remember_turn(user_text, final_message)
                 return final_message
 
