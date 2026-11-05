@@ -228,6 +228,7 @@ class GroqChatClient:
         }
         rate_retries = 0
         tool_retries = 0
+        format_retries = 0
         while True:
             try:
                 response = requests.post(
@@ -251,6 +252,27 @@ class GroqChatClient:
                 time.sleep(error.retry_after + 0.2)
                 continue
             error_text = str(error).lower()
+            if (
+                format_retries < 1
+                and "failed to validate json" in error_text
+            ):
+                # GPT-OSS can occasionally fail Groq's JSON-mode validator even
+                # when asked for a JSON object. Retry in plain text and let the
+                # worker's existing JSON repair path validate the returned text.
+                format_retries += 1
+                payload.pop("response_format", None)
+                payload["temperature"] = 0.2
+                payload["messages"] = list(messages) + [{
+                    "role": "user",
+                    "content": (
+                        "Your previous response failed JSON validation. Return exactly one "
+                        "valid JSON object as message text using the required action format. "
+                        "Do not call or request tools."
+                    ),
+                }]
+                if status_callback:
+                    status_callback("Retrying Groq in plain JSON text mode…")
+                continue
             if (
                 tool_retries < 1
                 and "tool choice is none" in error_text
