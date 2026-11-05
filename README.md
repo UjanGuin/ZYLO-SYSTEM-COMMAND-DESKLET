@@ -41,7 +41,7 @@ The screenshots below are from the Fedora desktop. Each is an optimized WebP ima
 
 ### Fedora RPM package
 
-Download the latest `zylo-desktop-assistant-*.noarch.rpm` from [GitHub Releases](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/latest), then install it with Fedora's package manager:
+Download the [Fedora 45 RPM](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/packages/1.0.0/zylo-desktop-assistant-1.0.0-1.fc45.noarch.rpm) or browse the [GitHub release notes](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/latest), then install it with Fedora's package manager:
 
 ```bash
 sudo dnf install ./zylo-desktop-assistant-1.0.0-1.fc45.noarch.rpm
@@ -51,7 +51,14 @@ Open **ZYLO Desktop Assistant** from the Applications grid. The RPM installs the
 
 ### Source package
 
-The release also includes a Fedora noarch source RPM (`.src.rpm`), a portable source archive (`.tar.gz`), and `SHA256SUMS` for download verification. Download the `zylo-desktop-assistant-1.0.0.tar.gz` source archive, extract it, and run:
+The published package folder also includes a Fedora noarch source RPM (`.src.rpm`), a portable source archive (`.tar.gz`), and `SHA256SUMS` for download verification:
+
+- [Fedora 45 binary RPM](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/packages/1.0.0/zylo-desktop-assistant-1.0.0-1.fc45.noarch.rpm)
+- [Fedora source RPM](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/packages/1.0.0/zylo-desktop-assistant-1.0.0-1.fc45.src.rpm)
+- [Portable source archive](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/packages/1.0.0/zylo-desktop-assistant-1.0.0.tar.gz)
+- [SHA-256 checksums](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/packages/1.0.0/SHA256SUMS)
+
+Download the source archive, extract it, and run:
 
 ```bash
 tar -xzf zylo-desktop-assistant-1.0.0.tar.gz
