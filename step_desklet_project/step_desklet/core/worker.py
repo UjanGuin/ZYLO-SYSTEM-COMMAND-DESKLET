@@ -97,6 +97,7 @@ class NIMChatClient:
         max_tokens: int = 4096,
         frequency_penalty: float = 0.0,
         presence_penalty: float = 0.0,
+        status_callback: Optional[Callable[[str], None]] = None,
     ) -> str:
         stream = False
         headers = {
@@ -195,7 +196,14 @@ class GroqChatClient:
             raise RuntimeError("Groq API key missing. Set GROQ_API_KEY in ~/.config/step-desklet.env.")
         self.api_key = api_key
 
-    def complete(self, *, model: str, messages: List[Dict[str, Any]], **_kwargs) -> str:
+    def complete(
+        self,
+        *,
+        model: str,
+        messages: List[Dict[str, Any]],
+        status_callback: Optional[Callable[[str], None]] = None,
+        **_kwargs,
+    ) -> str:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Accept": "application/json",
@@ -214,7 +222,7 @@ class GroqChatClient:
             "stop": None,
         }
         response = None
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 response = requests.post(
                     GROQ_API_URL, headers=headers, json=payload, stream=False, timeout=(10, 180)
@@ -226,11 +234,13 @@ class GroqChatClient:
             error = _api_error(response, "Groq")
             response.close()
             if (
-                attempt == 0
+                attempt < 2
                 and isinstance(error, ProviderRateLimitError)
                 and error.retry_after is not None
-                and 0 < error.retry_after <= 15
+                and 0 < error.retry_after <= 60
             ):
+                if status_callback:
+                    status_callback(f"Waiting for Groq quota ({int(error.retry_after + 0.999)}s)…")
                 time.sleep(error.retry_after + 0.2)
                 continue
             raise error
@@ -453,6 +463,7 @@ class StepAIWorker(QObject):
                         messages=request_messages,
                         temperature=response_temperature,
                         max_tokens=4096,
+                        status_callback=status_callback,
                     )
                     break
                 except RuntimeError as exc:
