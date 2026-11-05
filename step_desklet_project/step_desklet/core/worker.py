@@ -3,6 +3,7 @@ import os
 import re
 import shlex
 import subprocess
+import time
 from typing import Optional, Dict, List, Any, Callable, Tuple, Set
 from PyQt6.QtCore import QObject, pyqtSignal
 import requests
@@ -12,6 +13,12 @@ DEFAULT_NIM_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 DEFAULT_NIM_MODEL = "stepfun-ai/step-5-preview"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "openai/gpt-oss-120b"
+
+
+class ProviderRateLimitError(RuntimeError):
+    def __init__(self, message: str, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 def _api_error(response: requests.Response, provider: str) -> RuntimeError:
@@ -34,7 +41,16 @@ def _api_error(response: requests.Response, provider: str) -> RuntimeError:
     if status == 401 or status == 403:
         detail = f"API key or model access was rejected (HTTP {status}). {detail}"
     elif status == 429:
-        detail = f"Rate limit or provider quota reached (HTTP 429). {detail}"
+        message = f"{provider} rate limit or quota reached (HTTP 429). {detail}"
+        retry_after = None
+        raw_delay = response.headers.get("Retry-After", "").strip()
+        try:
+            retry_after = float(raw_delay)
+        except ValueError:
+            match = re.search(r"try again in\s+(\d+(?:\.\d+)?)\s*s", detail, re.IGNORECASE)
+            if match:
+                retry_after = float(match.group(1))
+        return ProviderRateLimitError(message, retry_after)
     elif status >= 500:
         detail = f"{provider} is temporarily unavailable (HTTP {status}). {detail}"
     else:
@@ -196,19 +212,31 @@ class GroqChatClient:
             # GPT-OSS returns reasoning separately from answer content. Hide reasoning
             # and request one complete JSON response so the assistant text is reliable.
             "include_reasoning": False,
+            "response_format": {"type": "json_object"},
             "stream": False,
             "stop": None,
         }
-        try:
-            response = requests.post(
-                GROQ_API_URL, headers=headers, json=payload, stream=False, timeout=(10, 180)
-            )
-            if not response.ok:
-                error = _api_error(response, "Groq")
-                response.close()
-                raise error
-        except requests.RequestException as exc:
-            raise RuntimeError(f"Groq request failed: {exc}") from exc
+        response = None
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    GROQ_API_URL, headers=headers, json=payload, stream=False, timeout=(10, 180)
+                )
+            except requests.RequestException as exc:
+                raise RuntimeError(f"Groq request failed: {exc}") from exc
+            if response.ok:
+                break
+            error = _api_error(response, "Groq")
+            response.close()
+            if (
+                attempt == 0
+                and isinstance(error, ProviderRateLimitError)
+                and error.retry_after is not None
+                and 0 < error.retry_after <= 15
+            ):
+                time.sleep(error.retry_after + 0.2)
+                continue
+            raise error
         try:
             body = response.json()
         finally:
@@ -398,6 +426,7 @@ class StepAIWorker(QObject):
         short_context_intent = open_intent or bool(recent_open_intent)
         step_limit = min(max_steps, OPEN_INTENT_MAX_STEPS) if short_context_intent else max_steps
         response_temperature = 0.5
+        format_retries = 0
 
         # For open-file intent, use a short-lived request context to avoid large-history latency.
         # Execution still goes through the same command engine.
@@ -451,17 +480,18 @@ class StepAIWorker(QObject):
 
             action = self._extract_json(raw)
             if not action:
-                if short_context_intent:
+                if format_retries < 1:
+                    format_retries += 1
                     request_messages.append(
                         {
                             "role": "user",
-                            "content": "Invalid format. Reply with raw JSON only, no prose.",
+                            "content": "Your previous response was not valid JSON. Retry with one valid JSON object only, following the required mode schema. Do not include prose or markdown.",
                         }
                     )
                     if not short_context_intent:
                         self.messages = request_messages
                     continue
-                raise RuntimeError("Format Error")
+                raise RuntimeError("The model did not return valid JSON after one retry. Please try again.")
 
             mode = action.get("mode")
             if mode == "final":
