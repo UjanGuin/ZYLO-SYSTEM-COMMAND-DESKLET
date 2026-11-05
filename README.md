@@ -9,7 +9,7 @@ ZYLO is a desktop assistant for Fedora Workstation. Its compact glass-style pane
 
 ## Desktop screenshots
 
-The screenshots below are from the Fedora desktop. Each is an optimized WebP image at its original **1426 × 566 px** resolution. Click an image to open its full-size version.
+The screenshots below are from the Fedora desktop. 
 
 <p align="center">
   <a href="assets/desktop-01-idle.webp"><img src="assets/desktop-01-idle.webp" alt="ZYLO panel idle on the Fedora desktop" width="100%"></a><br>
