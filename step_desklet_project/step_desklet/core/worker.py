@@ -172,7 +172,7 @@ class NIMChatClient:
 
 
 class GroqChatClient:
-    """Groq chat completions client using the OpenAI-compatible SSE API."""
+    """Groq chat completions client using the OpenAI-compatible JSON API."""
 
     def __init__(self, api_key: str):
         if not api_key:
@@ -182,7 +182,7 @@ class GroqChatClient:
     def complete(self, *, model: str, messages: List[Dict[str, Any]], **_kwargs) -> str:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "Accept": "text/event-stream",
+            "Accept": "application/json",
         }
         payload = {
             "model": model or GROQ_MODEL,
@@ -193,12 +193,15 @@ class GroqChatClient:
             "max_completion_tokens": 8192,
             "top_p": 1,
             "reasoning_effort": "medium",
-            "stream": True,
+            # GPT-OSS returns reasoning separately from answer content. Hide reasoning
+            # and request one complete JSON response so the assistant text is reliable.
+            "include_reasoning": False,
+            "stream": False,
             "stop": None,
         }
         try:
             response = requests.post(
-                GROQ_API_URL, headers=headers, json=payload, stream=True, timeout=(10, 180)
+                GROQ_API_URL, headers=headers, json=payload, stream=False, timeout=(10, 180)
             )
             if not response.ok:
                 error = _api_error(response, "Groq")
@@ -206,41 +209,17 @@ class GroqChatClient:
                 raise error
         except requests.RequestException as exc:
             raise RuntimeError(f"Groq request failed: {exc}") from exc
-
-        chunks: List[str] = []
-        finish_reason = None
         try:
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                if isinstance(line, bytes):
-                    line = line.decode("utf-8", errors="replace")
-                data = line[5:].strip() if line.startswith("data:") else line.strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    event = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                if event.get("error"):
-                    error = event["error"]
-                    detail = error.get("message", str(error)) if isinstance(error, dict) else str(error)
-                    raise RuntimeError(f"Groq stream error: {detail}")
-                for choice in event.get("choices", []):
-                    delta = choice.get("delta", {})
-                    content = _content_text(delta.get("content"))
-                    if content:
-                        chunks.append(content)
-                    finish_reason = choice.get("finish_reason") or finish_reason
-        except RuntimeError:
-            raise
-        except requests.RequestException as exc:
-            raise RuntimeError(f"Groq stream interrupted: {exc}") from exc
+            body = response.json()
         finally:
             response.close()
-        content = "".join(chunks).strip()
+        try:
+            choice = body["choices"][0]
+            content = _content_text(choice.get("message", {}).get("content")).strip()
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("Groq returned an unexpected completion response.") from exc
         if not content:
-            if finish_reason == "length":
+            if choice.get("finish_reason") == "length":
                 raise RuntimeError("Groq reached its output limit before returning answer text. Try a shorter request.")
             raise RuntimeError("Groq returned an empty response.")
         return content
