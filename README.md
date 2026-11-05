@@ -1,45 +1,88 @@
 # ZYLO Desktop Assistant
 
-ZYLO is a small GNOME Shell desktop assistant for Fedora Workstation. The assistant is a desktop-only Shell extension; the launcher is a separate setup window used to enter a display name, configure provider keys, and choose an accent color.
+ZYLO is a desktop assistant for Fedora Workstation. Its compact glass-style panel runs as a GNOME Shell extension on the desktop, while a separate launcher handles first-time setup and later changes to your profile, API keys, and accent color.
 
-## Current features
+<p align="center">
+  <strong>NVIDIA NIM · Groq · Tavily web search · Fedora GNOME</strong><br>
+  A small desktop surface for questions and workstation actions.
+</p>
 
-- Native GNOME Shell extension with a movable, resizable, lockable glass-style desktop panel.
-- NVIDIA NIM using `stepfun-ai/step-5-preview` by default, and Groq using `openai/gpt-oss-120b` as an alternate provider.
-- Short conversation history persisted locally between requests and logins.
-- Optional Tavily search. The assistant can request current web information; search results are passed back as untrusted reference material.
-- Setup launcher stores provider credentials in `~/.config/step-desklet.env` with private file permissions. Keys are not part of the source tree.
-- Accent color selection in setup, applied to the extension's accent details while preserving the dark panel and established send-button style.
-- Response text clears after a delay based on response length.
-- No voice input or speech output.
+## Desktop screenshots
 
-## Fedora installation
+The screenshots below are from the Fedora desktop. Each is an optimized WebP image at its original **1426 × 566 px** resolution. Click an image to open its full-size version.
 
-Requirements: Fedora Workstation, GNOME Shell 51 (the version declared in the extension metadata), Python 3, and network access for installing Python packages and calling the configured services.
+<p align="center">
+  <a href="assets/desktop-01-idle.webp"><img src="assets/desktop-01-idle.webp" alt="ZYLO panel idle on the Fedora desktop" width="100%"></a><br>
+  <sub><b>01 · Desktop panel</b> — ZYLO locked on the desktop, ready for a prompt.</sub>
+</p>
 
-From the project directory:
+<p align="center">
+  <a href="assets/desktop-02-response.webp"><img src="assets/desktop-02-response.webp" alt="ZYLO showing an assistant response on the Fedora desktop" width="100%"></a><br>
+  <sub><b>02 · Assistant response</b> — A reply expands above the compact input.</sub>
+</p>
+
+<p align="center">
+  <a href="assets/desktop-03-executing.webp"><img src="assets/desktop-03-executing.webp" alt="ZYLO showing command execution status on the Fedora desktop" width="100%"></a><br>
+  <sub><b>03 · Work in progress</b> — The status line explains when ZYLO is executing a workstation action.</sub>
+</p>
+
+## Features
+
+- A native GNOME Shell panel that stays on the desktop, hides while another application is focused, and hides in GNOME Overview.
+- Move by dragging the header; resize while unlocked; lock to save the panel position and dimensions across logins.
+- NVIDIA NIM with `stepfun-ai/step-5-preview` by default, or Groq with `openai/gpt-oss-120b` from the provider button.
+- A short local conversation history retained between requests and logins.
+- Optional Tavily web search. The model can request a search for current information; returned pages and snippets are treated as untrusted context.
+- Setup form for your name, NVIDIA/Groq/Tavily keys, and a custom accent color. The launcher links to each provider's key page.
+- Response text clears after a duration based on response length.
+- No voice recording or speech output.
+
+## Installation options
+
+### Fedora RPM package
+
+Download the latest `zylo-desktop-assistant-*.noarch.rpm` from [GitHub Releases](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/latest), then install it with Fedora's package manager:
 
 ```bash
-chmod +x install.sh install-extension.sh
+sudo dnf install ./zylo-desktop-assistant-1.0.0-1.fc45.noarch.rpm
+```
+
+Open **ZYLO Desktop Assistant** from the Applications grid. The RPM installs the launcher and app files system-wide. The first launch creates a private per-user Python environment, installs the Python requirements, installs/enables the GNOME extension, and opens the setup form. Those first-run steps need an internet connection.
+
+### Source package
+
+The release also includes a Fedora noarch source RPM (`.src.rpm`), a portable source archive (`.tar.gz`), and `SHA256SUMS` for download verification. Download the `zylo-desktop-assistant-1.0.0.tar.gz` source archive, extract it, and run:
+
+```bash
+tar -xzf zylo-desktop-assistant-1.0.0.tar.gz
+cd zylo-desktop-assistant-1.0.0
 ./install.sh
 ```
 
-Open **ZYLO Desktop Assistant** from the Applications grid or run `./step-desklet` to open setup. Enter your name, add the provider keys you plan to use, choose an accent, and save. The launcher links to the NVIDIA, Groq, and Tavily key pages. If GNOME Shell does not load the newly installed extension in the current session, log out and back in once.
+You can also clone this repository and run `./install.sh` from `step_desklet_project/`. For subsequent setup changes, open **ZYLO Desktop Assistant** again or run `./step-desklet` from the project directory. Blank key fields keep the saved value.
 
-The setup launcher can be opened again at any time to change the name, keys, or accent color. Leaving a key field blank keeps the saved key.
+## First-run setup
+
+The launcher asks for:
+
+1. **Your name**, displayed in the panel header.
+2. **Provider keys**: NVIDIA NIM is required to set up the default model. Groq is optional. Tavily is optional and is used only if the model requests web search.
+3. **Accent color**, used on the panel outline, input outline, and header controls. The dark panel and lavender send button retain their appearance.
+
+The launcher links directly to [NVIDIA API keys](https://build.nvidia.com/), [Groq API keys](https://console.groq.com/keys), and [Tavily](https://app.tavily.com/home).
 
 ## Using the desktop panel
 
-- Drag the header to move the panel while it is unlocked.
-- Click the lock icon to lock its position; unlock it to move or resize.
+- Drag the header to move the panel while unlocked.
+- Click the lock icon to lock its position. Unlock it to move or resize; the resize control appears only while unlocked.
 - Use the reload/clear icon to clear the current response.
-- Click the provider icon to switch between NVIDIA NIM and Groq.
-- Enter a prompt and press Enter or the arrow button. The status area reports thinking, web search, or command execution while the assistant works.
-- The panel is shown on the desktop and hidden while another application is focused or GNOME Overview is open.
+- Click the provider icon to switch between NVIDIA NIM and Groq. A brief confirmation appears after switching.
+- Enter a prompt and press Enter or the arrow button. Status text distinguishes thinking, web search, and command execution.
+- Responses expand the panel and clear automatically after a word-count-based delay.
 
 ## Providers and credentials
 
-Credentials are kept in `~/.config/step-desklet.env` (mode `0600`):
+Credentials are stored locally in `~/.config/step-desklet.env`, with permissions set to `0600`:
 
 ```dotenv
 NVIDIA_API_KEY=...
@@ -47,29 +90,38 @@ GROQ_API_KEY=...
 TAVILY_API_KEY=...
 ```
 
-The setup application writes these values locally and never adds them to Git. NVIDIA and Groq are the chat providers. Tavily is only called when the assistant chooses the `search` action and a Tavily key is configured. A missing Tavily key produces an explanatory error if a search is requested.
+Keys are never written to the source tree. NVIDIA and Groq provide chat completions. Tavily is called only when the model selects its `search` action; if no Tavily key is configured, ZYLO reports that search needs a key.
 
-## Local state
+## Local state and files
 
 - Setup preferences: `~/.config/step-desklet/settings.json`
 - Panel position, size, and lock state: `~/.config/step-desklet/layout.json`
-- Recent conversation turns: `~/.config/step-desklet/conversation.json`
-- Current provider selection: `~/.config/step-desklet/model-provider`
-- Installed extension and private Python runtime: `~/.local/share/gnome-shell/extensions/zylo-command@local` and `~/.local/share/zylo-system-command-desklet`
+- Recent conversation history: `~/.config/step-desklet/conversation.json`
+- Selected provider: `~/.config/step-desklet/model-provider`
+- Installed extension: `~/.local/share/gnome-shell/extensions/zylo-command@local`
+- Per-user virtual environment and request bridge: `~/.local/share/zylo-system-command-desklet`
 
-## Development and troubleshooting
+The extension source is in `step_desklet_project/gnome_extension/`. `extension_bridge.py` passes requests to the Python worker in `step_desklet_project/step_desklet/core/worker.py`. `setup_app.py` is the configuration launcher.
 
-`install-extension.sh` copies the extension, bridge, and Python package into the user runtime, creates a virtual environment, installs `requirements.txt`, packages the GNOME extension, and enables it. Re-run it after source changes. Check extension state with:
+## Updating, checking, and uninstalling
+
+To inspect extension state:
 
 ```bash
 gnome-extensions info zylo-command@local
 ```
 
-The extension code is in `gnome_extension/`. `extension_bridge.py` starts one Python worker request at a time; the command and search behavior is in `step_desklet/core/worker.py`.
+To remove the RPM package:
+
+```bash
+sudo dnf remove zylo-desktop-assistant
+```
+
+To remove the per-user extension and runtime as well, run `./uninstall.sh` from the source package. It preserves your settings, conversation history, layout, and API keys in `~/.config`.
 
 ## Security
 
-The assistant can run shell commands as the logged-in user. Review commands and results carefully, especially for requests involving deletion, system configuration, or elevated privileges. Search results are external input and should not be treated as instructions. Protect `~/.config/step-desklet.env`; never commit it or paste its contents into public issues.
+ZYLO can run shell commands as your logged-in user. Review prompts and results carefully, particularly for deletion, system changes, or elevated privileges. Treat web search results as external input rather than instructions. Protect `~/.config/step-desklet.env`; do not commit it or paste its contents into public issues.
 
 ## License
 

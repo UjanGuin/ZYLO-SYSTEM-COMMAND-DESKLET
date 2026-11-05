@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ZYLO Desktop Assistant
+Comment=Set up and launch the ZYLO desktop assistant
+Exec=zylo-desktop-assistant
+TryExec=zylo-desktop-assistant
+Icon=applications-system
+Terminal=false
+Categories=Utility;
+StartupNotify=true
