@@ -1,0 +1,29 @@
+.zylo-glass-card {
+    background-color: rgba(27, 19, 43, 0.98);
+    border: 1px solid rgba(197, 169, 255, 0.62);
+    border-radius: 18px;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.58);
+    color: #f5f9ff;
+    padding: 10px 13px 3px;
+    spacing: 2px;
+    font-family: Cantarell, sans-serif;
+    font-style: normal;
+}
+
+.zylo-header { spacing: 10px; }
+.zylo-header-actions { spacing: 2px; }
+.zylo-title { color: #f5f9ff; font-size: 14px; font-weight: 800; letter-spacing: 1.4px; font-style: normal; }
+.zylo-subtitle { color: rgba(214, 232, 255, 0.72); font-size: 8px; font-weight: 700; letter-spacing: 1.2px; font-style: normal; }
+.zylo-handle { padding: 2px 8px 2px 0; }
+.zylo-icon-button { border-radius: 14px; padding: 5px 8px; color: #e6d9ff; }
+.zylo-icon-button:hover { background-color: rgba(195, 160, 255, 0.18); }
+.zylo-status { color: rgba(209, 229, 255, 0.86); font-size: 10px; padding-top: 4px; font-style: normal; }
+.zylo-response { color: #edf5ff; font-size: 14px; line-height: 1.35; padding-top: 3px; font-style: normal; }
+.zylo-input-shell { background-color: rgba(0, 0, 0, 0.88); border: 1px solid rgba(210, 187, 255, 0.34); border-radius: 13px; padding: 1px 4px 1px 9px; spacing: 5px; min-height: 26px; margin-top: 3px; }
+.zylo-input, .zylo-input:focus { color: #f7fbff; background-color: transparent; border: none; box-shadow: none; border-radius: 0; font-size: 11px; padding: 0; min-height: 18px; }
+.zylo-send { background-color: rgba(220, 202, 255, 0.94); color: #24143b; border-radius: 11px; font-weight: 800; padding: 1px 7px; min-height: 21px; }
+.zylo-send:focus, .zylo-send:active, .zylo-send:insensitive { background-color: rgba(220, 202, 255, 0.94); color: #24143b; box-shadow: none; }
+.zylo-send:hover { background-color: #ffffff; }
+.zylo-footer { min-height: 8px; max-height: 8px; spacing: 0; }
+.zylo-resize-handle { color: rgba(230, 217, 255, 0.75); font-size: 10px; padding: 0 2px; min-height: 8px; }
+.zylo-resize-handle:hover { color: #ffffff; }

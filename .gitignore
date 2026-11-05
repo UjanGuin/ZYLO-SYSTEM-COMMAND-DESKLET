@@ -1,0 +1,19 @@
+# Local credentials and app state
+.env
+.env.*
+*.env
+!requirements.txt
+settings.json
+layout.json
+conversation.json
+model-provider
+
+# Python runtime and generated files
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Desktop/session files
+.DS_Store
+*.log

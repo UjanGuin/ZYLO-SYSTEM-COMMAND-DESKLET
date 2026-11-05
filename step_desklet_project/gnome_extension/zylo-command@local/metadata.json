@@ -1,0 +1,7 @@
+{
+  "uuid": "zylo-command@local",
+  "name": "ZYLO Command Desklet",
+  "description": "A floating NVIDIA NIM command surface for GNOME Shell.",
+  "shell-version": ["51"],
+  "version": 1
+}

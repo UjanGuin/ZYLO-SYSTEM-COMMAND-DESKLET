@@ -1,6 +1,4 @@
 PyQt6
-openai
 python-dotenv
 requests
-assemblyai
-pynput
+tavily-python
