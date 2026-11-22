@@ -5,6 +5,7 @@ import math
 import os
 import re
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -135,6 +136,19 @@ def write_json_file(path: Path, payload: Dict[str, Any]) -> None:
         except OSError:
             pass
     os.replace(tmp, path)
+
+
+def refresh_local_date() -> None:
+    """Save the Windows calendar date when it changes."""
+    path = get_config_dir() / "local-date.json"
+    today = date.today().isoformat()
+    if read_json_file(path).get("date") == today:
+        return
+    try:
+        write_json_file(path, {"date": today})
+    except OSError:
+        # The model can still get the date directly from the system clock.
+        pass
 
 
 def parse_bounded_int(
@@ -283,7 +297,9 @@ def get_memory_turns(settings: Dict[str, Any] | None = None) -> int:
 def read_env_keys() -> Dict[str, str]:
     keys = {
         "NVIDIA_API_KEY": "",
+        "NVIDIA_BACKUP_API_KEY": "",
         "GROQ_API_KEY": "",
+        "GROQ_BACKUP_API_KEY": "",
         "TAVILY_API_KEY": "",
         "LMSTUDIO_BASE_URL": "",
         "LMSTUDIO_MODEL": "",
@@ -316,6 +332,9 @@ def write_env_keys(
     lmstudio_base_url: str = "",
     lmstudio_model: str = "",
     lmstudio_api_key: str = "",
+    *,
+    nvidia_backup_key: str | None = None,
+    groq_backup_key: str | None = None,
 ) -> None:
     ensure_config_dir()
     env_file = get_env_file()
@@ -334,16 +353,17 @@ def write_env_keys(
         "LMSTUDIO_MODEL": lmstudio_model.strip(),
         "LMSTUDIO_API_KEY": lmstudio_api_key.strip(),
     }
+    if nvidia_backup_key is not None:
+        updates["NVIDIA_BACKUP_API_KEY"] = nvidia_backup_key.strip()
+    if groq_backup_key is not None:
+        updates["GROQ_BACKUP_API_KEY"] = groq_backup_key.strip()
 
     out_lines = []
     seen = set()
     for line in existing_lines:
-        matched_key = None
-        for key in updates:
-            if line.startswith(f"{key}="):
-                matched_key = key
-                break
-        if matched_key:
+        key_text, separator, _ = line.partition("=")
+        matched_key = key_text.strip()
+        if separator and matched_key in updates:
             seen.add(matched_key)
             val = updates[matched_key]
             if val:

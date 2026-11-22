@@ -6,16 +6,19 @@ using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("ZYLO Desktop Assistant Setup")]
 [assembly: AssemblyProduct("ZYLO Desktop Assistant")]
-[assembly: AssemblyVersion("1.1.6.0")]
+[assembly: AssemblyVersion("2.0.0.0")]
 
 internal sealed class ZyloSetup : Form
 {
+    private const string AppUserModelId = "ZYLO.DesktopAssistant";
     private readonly Button install = new Button { Text = "Install", Width = 100, Height = 32 };
     private readonly CheckBox launch = new CheckBox { Text = "Open ZYLO after installation", Checked = true, AutoSize = true };
     private readonly TextBox output = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
@@ -39,6 +42,7 @@ internal sealed class ZyloSetup : Form
     private ZyloSetup()
     {
         Text = "ZYLO Desktop Assistant Setup";
+        Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(520, 390);
         ClientSize = new Size(600, 380);
@@ -152,6 +156,7 @@ internal sealed class ZyloSetup : Form
                 string runtimeWindowed = Path.Combine(Path.GetDirectoryName(runtime), "pythonw.exe");
                 File.WriteAllText(Path.Combine(appPath, "python-runtime.txt"), runtimeWindowed);
                 File.Copy(Application.ExecutablePath, Path.Combine(appPath, "ZYLO.exe"), true);
+                SaveLocalDate(runtime, appPath, log);
                 return appPath;
             }
             finally { setupLock.ReleaseMutex(); }
@@ -159,6 +164,13 @@ internal sealed class ZyloSetup : Form
     }
 
     private static readonly string ImportCheck = "-E -s -c " + Quote("import zylo_win11, setup_app");
+
+    private static void SaveLocalDate(string runtime, string appPath, Action<string> log)
+    {
+        string command = "from step_desklet.core.config import refresh_local_date; refresh_local_date()";
+        if (Run(runtime, "-E -s -B -c " + Quote(command), appPath, log) != 0)
+            log("ZYLO will check the local date when it starts.");
+    }
 
     private static string FindInstalledRuntime(string appPath, string basePath)
     {
@@ -273,12 +285,63 @@ internal sealed class ZyloSetup : Form
         Directory.CreateDirectory(programs);
         var start = LaunchInfo(appPath);
         dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell", true));
-        dynamic shortcut = shell.CreateShortcut(Path.Combine(programs, "ZYLO Desktop Assistant.lnk"));
+        string shortcutPath = Path.Combine(programs, "ZYLO Desktop Assistant.lnk");
+        dynamic shortcut = shell.CreateShortcut(shortcutPath);
         shortcut.TargetPath = start.FileName;
         shortcut.Arguments = start.Arguments;
         shortcut.WorkingDirectory = start.WorkingDirectory;
         shortcut.Description = "Open ZYLO Desktop Assistant";
+        shortcut.IconLocation = start.FileName + ",0";
         shortcut.Save();
+        SetShortcutAppId(shortcutPath);
+    }
+
+    private static void SetShortcutAppId(string shortcutPath)
+    {
+        var shellLinkId = new Guid("00021401-0000-0000-C000-000000000046");
+        object link = Activator.CreateInstance(Type.GetTypeFromCLSID(shellLinkId));
+        var value = new PropVariant { Type = 31, Pointer = Marshal.StringToCoTaskMemUni(AppUserModelId) };
+        try
+        {
+            var file = (IPersistFile)link;
+            const int ReadWrite = 2; // STGM_READWRITE
+            file.Load(shortcutPath, ReadWrite);
+            var store = (IPropertyStore)link;
+            var key = new PropertyKey { FormatId = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), Id = 5 };
+            store.SetValue(ref key, ref value);
+            store.Commit();
+            file.Save(shortcutPath, true);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(value.Pointer);
+            Marshal.FinalReleaseComObject(link);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    private struct PropertyKey
+    {
+        public Guid FormatId;
+        public uint Id;
+    }
+
+    // VT_LPWSTR uses the pointer at offset 8 in the x64 PROPVARIANT union.
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
+    private struct PropVariant
+    {
+        [FieldOffset(0)] public ushort Type;
+        [FieldOffset(8)] public IntPtr Pointer;
+    }
+
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IPropertyStore
+    {
+        void GetCount(out uint count);
+        void GetAt(uint index, out PropertyKey key);
+        void GetValue(ref PropertyKey key, out PropVariant value);
+        void SetValue(ref PropertyKey key, ref PropVariant value);
+        void Commit();
     }
 
     private static void RunChecked(string executable, string args, string folder, Action<string> log, string error)

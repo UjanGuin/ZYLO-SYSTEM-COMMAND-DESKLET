@@ -14,6 +14,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from step_desklet.win11.branding import set_zylo_app_user_model_id, zylo_app_icon
 from step_desklet.win11.dwm import (
     acquire_single_instance_mutex,
     close_win32_handle,
@@ -22,6 +23,7 @@ from step_desklet.win11.dwm import (
     signal_settings_request,
     take_settings_request,
 )
+from step_desklet.win11.request_process import run_request_worker
 from step_desklet.win11.tray_app import ZyloWin11Controller
 
 
@@ -37,6 +39,9 @@ def listen_for_settings(handle, controller: ZyloWin11Controller) -> QTimer:
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--request-worker"]:
+        return run_request_worker()
+
     parser = argparse.ArgumentParser(description="ZYLO Desktop Assistant for Windows 11 26H2")
     launch = parser.add_mutually_exclusive_group()
     launch.add_argument("--setup", action="store_true", help="Open ZYLO Settings (default)")
@@ -46,9 +51,12 @@ def main() -> int:
     # Improve crisp PerMonitorV2 rendering on Windows 11 26H2 high-DPI displays.
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 
+    set_zylo_app_user_model_id()
     app = QApplication([sys.argv[0], *qt_args])
-    app.setApplicationName("ZYLO Desktop Assistant")
+    app.setApplicationName("ZYLO")
+    app.setApplicationDisplayName("ZYLO Desktop Assistant")
     app.setOrganizationName("ZYLO")
+    app.setWindowIcon(zylo_app_icon())
 
     settings_event = None
     mutex_handle = None

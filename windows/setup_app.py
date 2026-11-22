@@ -6,24 +6,28 @@ import re
 import subprocess
 import sys
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QConicalGradient,
     QDesktopServices,
+    QIcon,
     QMouseEvent,
     QPainter,
     QPen,
+    QPixmap,
     QRadialGradient,
 )
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -31,7 +35,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
-    QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -39,14 +43,12 @@ from PyQt6.QtWidgets import (
 from step_desklet.core.config import (
     ACCENTS,
     DEFAULT_LMSTUDIO_BASE_URL,
-    DEFAULT_MEMORY_TURNS,
     GRADIENT_PRESETS,
     IS_WINDOWS,
     MAX_MEMORY_TURNS,
     MIN_MEMORY_TURNS,
     ensure_config_dir,
     get_accent_config,
-    get_env_file,
     get_memory_turns,
     get_settings_file,
     is_windows_startup_enabled,
@@ -68,11 +70,97 @@ from step_desklet.core.skills import (
     untrust_skill,
 )
 from step_desklet.core.worker import list_lmstudio_models, normalize_lmstudio_base_url
+from step_desklet.win11.branding import set_zylo_app_user_model_id, zylo_app_icon
+from step_desklet.win11.dwm import use_dark_title_bar
 
 API_KEY_URL = "https://build.nvidia.com/"
 GROQ_API_KEY_URL = "https://console.groq.com/keys"
 TAVILY_API_KEY_URL = "https://app.tavily.com/home"
 LMSTUDIO_DOCS_URL = "https://lmstudio.ai/docs/app/api"
+
+SETTINGS_STYLE = """
+    QDialog#ZyloSettings {
+        background: #12131c; color: #edf0fa;
+        font-family: "Segoe UI"; font-size: 13px;
+    }
+    QLabel { color: #e9ecf7; }
+    QLabel#StudioMuted { color: #a5adc2; }
+    QLabel#StudioBrand { color: #f6f0ff; font-size: 19px; font-weight: 750; }
+    QLabel#StudioTitle { color: #f7f3ff; font-size: 33px; font-weight: 650; }
+    QLabel#StudioCardTitle { color: #f2efff; font-size: 17px; font-weight: 650; }
+    QFrame#StudioSidebar { background: #191a26; border-right: 1px solid #2d3042; }
+    QFrame#StudioFooter { background: #161822; border-top: 1px solid #2d3042; }
+    QFrame#StudioCard { background: #1b1e2b; border: 1px solid #303447; border-radius: 14px; }
+    QScrollArea, QStackedWidget, QWidget#StudioScrollContent {
+        background: transparent; border: none;
+    }
+    QScrollBar:vertical { background: transparent; width: 8px; margin: 3px 0; }
+    QScrollBar::handle:vertical { background: #464963; border-radius: 4px; min-height: 24px; }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+    QLineEdit, QComboBox {
+        color: #f5f4fe; background: #141621; border: 1px solid #393d53;
+        border-radius: 8px; padding: 8px 10px; min-height: 18px;
+    }
+    QLineEdit:focus, QComboBox:focus { border-color: #ad9afa; }
+    QLineEdit:disabled, QComboBox:disabled { color: #8089a0; }
+    QComboBox::drop-down { border: none; width: 24px; }
+    QComboBox::down-arrow { image: none; }
+    QComboBox QLineEdit { border: none; padding: 0; }
+    QComboBox QAbstractItemView {
+        background: #1f2231; color: #f0edff; border: 1px solid #42475e;
+        selection-background-color: #3c325e; selection-color: #fff;
+    }
+    QPushButton {
+        color: #eeebf8; background: #25283a; border: 1px solid #3b4057;
+        border-radius: 8px; padding: 8px 12px; min-height: 18px;
+    }
+    QPushButton:hover { background: #303449; border-color: #575c77; }
+    QPushButton:focus { border-color: #b3a1ff; }
+    QPushButton:pressed { background: #202231; }
+    QPushButton:disabled { color: #7f879e; }
+    QPushButton#StudioNav {
+        text-align: left; padding: 9px 12px; border: 1px solid transparent;
+        color: #b9c0d5; background: transparent;
+    }
+    QPushButton#StudioNav:hover { background: #252738; color: #f3efff; }
+    QPushButton#StudioNav:checked {
+        background: #332b4a; color: #ede3ff; border-color: #4e4168; font-weight: 650;
+    }
+    QPushButton#StudioNav:focus { border-color: #baa9ff; }
+    QPushButton#StudioSave { background: #bcabff; border-color: #c5b4ff; color: #211a34; font-weight: 700; }
+    QPushButton#StudioSave:hover { background: #d2c5ff; }
+    QPushButton#StudioSave:focus { border-color: #f2eaff; }
+    QPushButton#StudioSwatch { text-align: left; padding: 7px 9px; background: #171925; }
+    QPushButton#StudioSwatch:hover { background: #26293b; }
+    QPushButton#StudioSwatch[colorSelected="true"] { background: #302840; border: 1px solid #ae9bf2; }
+    QLabel#SavedKey { color: #a9e5c9; background: #263a36; border-radius: 6px; padding: 4px 8px; }
+    QLabel#EmptyKey { color: #b1b8ce; background: #272a3d; border-radius: 6px; padding: 4px 8px; }
+    QCheckBox { color: #e4e7f5; spacing: 9px; }
+    QCheckBox:disabled { color: #7c859e; }
+    QSlider::groove:horizontal { height: 5px; background: #393e55; border-radius: 2px; }
+    QSlider::sub-page:horizontal { background: #ad9af1; border-radius: 2px; }
+    QSlider::handle:horizontal { width: 13px; margin: -4px 0; background: #ddceff; border-radius: 6px; }
+    QSlider::handle:horizontal:focus { background: #fff0ff; }
+    QFrame#StudioPreviewInner { background: #1b1829; border-radius: 15px; }
+    QLabel#StudioPreviewName { font-size: 15px; font-weight: 700; color: #f8f5ff; }
+    QLabel#StudioPreviewPrompt {
+        color: #b3aec7; background: #100f19; border: 1px solid #3c3850;
+        border-radius: 9px; padding: 7px 10px;
+    }
+"""
+
+
+class SettingsComboBox(QComboBox):
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#bbc0d7" if self.isEnabled() else "#777f97"), 1.5))
+        x, y = self.width() - 15, self.height() / 2
+        painter.drawLine(QPointF(x - 4, y - 2), QPointF(x, y + 2))
+        painter.drawLine(QPointF(x, y + 2), QPointF(x + 4, y - 2))
+        painter.end()
 
 
 class ColorWheelWidget(QWidget):
@@ -189,58 +277,53 @@ class SetupDialog(QDialog):
         field.setPlaceholderText("Enter replacement" if is_saved else "Enter key")
 
         status = QLabel("Saved" if is_saved else "Not saved")
-        status.setStyleSheet("color: #75e0bd; font-weight: 600" if is_saved else "color: #c0ccdf")
+        status.setObjectName("SavedKey" if is_saved else "EmptyKey")
         status.setToolTip("This device has a saved key." if is_saved else "No key is saved on this device.")
 
         row = QHBoxLayout()
+        row.setSpacing(8)
         row.addWidget(field, 1)
         row.addWidget(status)
         if help_button is not None:
             row.addWidget(help_button)
         return field, row
 
+    def _backup_credential_row(self, saved_key: str) -> tuple[QLineEdit, QCheckBox, QHBoxLayout]:
+        field, row = self._credential_row(saved_key)
+        remove = QCheckBox("Remove")
+        remove.setEnabled(bool(saved_key))
+        remove.toggled.connect(field.setDisabled)
+        row.addWidget(remove)
+        return field, remove, row
+
     def __init__(self, parent=None, *, show_desklet=None):
         super().__init__(parent)
         self.setWindowTitle("ZYLO Settings" if IS_WINDOWS else "Set up ZYLO")
-        self.setMinimumWidth(540)
-        self.resize(560, 740)
-        self.setStyleSheet("""
-            QDialog { background: #172336; color: #f4f8ff; }
-            QLabel { color: #e7f0ff; }
-            QCheckBox { color: #e7f0ff; spacing: 8px; }
-            QLineEdit, QComboBox, QSpinBox {
-                color: white;
-                background: rgba(255,255,255,18);
-                border: 1px solid rgba(220,238,255,65);
-                border-radius: 8px;
-                padding: 8px 9px;
-            }
-            QComboBox QAbstractItemView {
-                background: #172336;
-                color: white;
-                selection-background-color: #3b2d5e;
-            }
-            QPushButton {
-                color: #f6f9ff;
-                background: rgba(255,255,255,18);
-                border: 1px solid rgba(220,238,255,55);
-                border-radius: 8px;
-                padding: 8px 12px;
-            }
-            QPushButton:hover { background: rgba(255,255,255,32); }
-        """)
+        if IS_WINDOWS:
+            self.setWindowFlags(
+                Qt.WindowType.Window
+                | Qt.WindowType.WindowTitleHint
+                | Qt.WindowType.WindowSystemMenuHint
+                | Qt.WindowType.WindowMinMaxButtonsHint
+                | Qt.WindowType.WindowCloseButtonHint
+            )
+        self.setWindowIcon(zylo_app_icon())
+        self.setObjectName("ZyloSettings")
+        available = self.screen().availableGeometry()
+        self.setMinimumSize(min(704, available.width() - 32), min(485, available.height() - 48))
+        self.resize(min(1000, available.width() - 32), min(730, available.height() - 48))
+        self.setStyleSheet(SETTINGS_STYLE)
         current = load_settings_config()
         saved_env = read_env_keys()
         accent_cfg = get_accent_config(current)
-        self.is_activated = bool(current.get("name") and get_env_file().exists())
 
         self.name = QLineEdit(current.get("name", ""))
         self.name.setPlaceholderText("What should ZYLO call you?")
 
-        self.provider_combo = QComboBox()
-        self.provider_combo.addItem("NVIDIA NIM (step-5-preview)", "nim")
-        self.provider_combo.addItem("Groq (openai/gpt-oss-120b)", "groq")
-        self.provider_combo.addItem("LM Studio (Local Server)", "lmstudio")
+        self.provider_combo = SettingsComboBox()
+        self.provider_combo.addItem("NVIDIA NIM · Nemotron 3.5 Super", "nim")
+        self.provider_combo.addItem("Groq · GPT-OSS 120B", "groq")
+        self.provider_combo.addItem("LM Studio · Local server", "lmstudio")
         active_provider = current.get("defaultProvider") or read_provider()
         idx = self.provider_combo.findData(active_provider)
         if idx >= 0:
@@ -252,7 +335,7 @@ class SetupDialog(QDialog):
         )
         self.lmstudio_url.setPlaceholderText(DEFAULT_LMSTUDIO_BASE_URL)
 
-        self.lmstudio_model = QComboBox()
+        self.lmstudio_model = SettingsComboBox()
         self.lmstudio_model.setEditable(True)
         saved_model = current.get("lmstudioModel") or saved_env.get("LMSTUDIO_MODEL") or ""
         if saved_model:
@@ -262,21 +345,16 @@ class SetupDialog(QDialog):
         if self.lmstudio_model.lineEdit():
             self.lmstudio_model.lineEdit().setPlaceholderText("Auto-detect loaded model, or enter model ID")
 
-        self.memory_turns = QSpinBox()
-        self.memory_turns.setRange(MIN_MEMORY_TURNS, MAX_MEMORY_TURNS)
-        self.memory_turns.setValue(get_memory_turns(current) or DEFAULT_MEMORY_TURNS)
-        self.memory_turns.setSuffix(" turns (persisted locally)")
-
         # Solid & Dynamic Gradient Accent controls
-        self.accent_mode_combo = QComboBox()
-        self.accent_mode_combo.addItem("Solid Accent Color", "solid")
-        self.accent_mode_combo.addItem("Dynamic Gradient (Island Glow)", "gradient")
+        self.accent_mode_combo = SettingsComboBox()
+        self.accent_mode_combo.addItem("Solid accent", "solid")
+        self.accent_mode_combo.addItem("Dynamic gradient", "gradient")
         mode_idx = self.accent_mode_combo.findData(accent_cfg["mode"])
         if mode_idx >= 0:
             self.accent_mode_combo.setCurrentIndex(mode_idx)
         self.accent_mode_combo.currentIndexChanged.connect(self._on_accent_mode_changed)
 
-        self.gradient_preset_combo = QComboBox()
+        self.gradient_preset_combo = SettingsComboBox()
         for preset_name in GRADIENT_PRESETS:
             self.gradient_preset_combo.addItem(preset_name, preset_name)
         self.gradient_preset_combo.addItem("Custom Gradient", "custom")
@@ -319,12 +397,6 @@ class SetupDialog(QDialog):
         self.wheel_system_btn = QPushButton("OS Picker…")
         self.wheel_system_btn.clicked.connect(self._open_system_color_dialog)
 
-        self.grad_preview = QLabel("Dynamic Island / OriginOS Rim Preview")
-
-        self._sync_gradient_preset_selection()
-        self._sync_wheel_to_target()
-        self._show_accent()
-
         self.startup_checkbox = QCheckBox("Launch ZYLO automatically when I sign in to Windows 11")
         if IS_WINDOWS:
             self.startup_checkbox.setChecked(
@@ -333,125 +405,316 @@ class SetupDialog(QDialog):
         else:
             self.startup_checkbox.hide()
 
-        title = QLabel("ZYLO Settings" if IS_WINDOWS else "Welcome to ZYLO")
-        title.setStyleSheet("font-size: 20px; font-weight: 700; color: white")
-        description = QLabel(
-            "Personalize your desktop assistant. API keys, LM Studio endpoint, and conversation memory stay locally on this device."
+        profile = self._studio_form()
+        profile.addRow("Your name", self.name)
+        profile.addRow("Default provider", self.provider_combo)
+        self.memory_turns = QSlider(Qt.Orientation.Horizontal)
+        self.memory_turns.setAccessibleName("Conversation history")
+        self.memory_turns.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.memory_turns.setRange(MIN_MEMORY_TURNS, MAX_MEMORY_TURNS)
+        self.memory_turns.setPageStep(5)
+        self.memory_turns.setValue(get_memory_turns(current))
+        turns_label = QLabel(f"{self.memory_turns.value()} turns")
+        turns_label.setObjectName("StudioMemoryTurns")
+        turns_label.setMinimumWidth(60)
+        turns_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.memory_turns.valueChanged.connect(lambda turns: turns_label.setText(f"{turns} turns"))
+        memory_row = QHBoxLayout()
+        memory_row.setSpacing(12)
+        memory_row.addWidget(self.memory_turns, 1)
+        memory_row.addWidget(turns_label)
+        memory = self._studio_form()
+        memory.addRow("Conversation history", memory_row)
+        general_cards = [
+            self._studio_card("Profile", profile),
+            self._studio_card("Memory", memory, "Recent conversations are saved on this device."),
+        ]
+
+        nvidia = self._studio_form()
+        self.key, key_row = self._credential_row(saved_env["NVIDIA_API_KEY"], self._website_button("Get key", API_KEY_URL))
+        self.key.setAccessibleName("NVIDIA API key")
+        nvidia.addRow("Primary key", key_row)
+        self.nvidia_backup_key, self.remove_nvidia_backup, nvidia_backup_row = self._backup_credential_row(
+            saved_env["NVIDIA_BACKUP_API_KEY"]
         )
-        description.setWordWrap(True)
+        self.nvidia_backup_key.setAccessibleName("NVIDIA backup key")
+        nvidia.addRow("Backup key", nvidia_backup_row)
 
-        form = QFormLayout()
-        form.addRow("Your name", self.name)
-        form.addRow("Default provider", self.provider_combo)
+        groq = self._studio_form()
+        self.groq_key, groq_row = self._credential_row(
+            saved_env["GROQ_API_KEY"], self._website_button("Get key", GROQ_API_KEY_URL)
+        )
+        self.groq_key.setAccessibleName("Groq API key")
+        groq.addRow("Primary key", groq_row)
+        self.groq_backup_key, self.remove_groq_backup, groq_backup_row = self._backup_credential_row(
+            saved_env["GROQ_BACKUP_API_KEY"]
+        )
+        self.groq_backup_key.setAccessibleName("Groq backup key")
+        groq.addRow("Backup key", groq_backup_row)
 
-        if IS_WINDOWS:
-            self.admin_tools_checkbox = QCheckBox("Allow ZYLO to request Windows administrator tools")
-            self.admin_tools_checkbox.setChecked(current.get("allowAdminToolRequests") is True)
-            form.addRow(self.admin_tools_checkbox)
-            admin_hint = QLabel(
-                "Ask ZYLO to open an administrator tool such as Event Viewer or Services. "
-                "You approve each launch and Windows handles elevation."
-            )
-            admin_hint.setWordWrap(True)
-            form.addRow(admin_hint)
-
-        key_hint = QLabel("Leave any saved key's field blank to keep it. Click Save once to apply your changes.")
-        key_hint.setWordWrap(True)
-        form.addRow(key_hint)
-
-        get_key = QPushButton("Get NVIDIA key")
-        get_key.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(API_KEY_URL)))
-        self.key, key_row = self._credential_row(saved_env["NVIDIA_API_KEY"], get_key)
-        form.addRow("NVIDIA API key", key_row)
-
-        get_groq_key = QPushButton("Get Groq key")
-        get_groq_key.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(GROQ_API_KEY_URL)))
-        self.groq_key, groq_row = self._credential_row(saved_env["GROQ_API_KEY"], get_groq_key)
-        form.addRow("Groq API key", groq_row)
-
-        get_tavily_key = QPushButton("Get Tavily key")
-        get_tavily_key.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(TAVILY_API_KEY_URL)))
-        self.tavily_key, tavily_row = self._credential_row(saved_env["TAVILY_API_KEY"], get_tavily_key)
-        form.addRow("Tavily search key", tavily_row)
-
+        local = self._studio_form()
         lms_url_row = QHBoxLayout()
+        lms_url_row.setSpacing(8)
         lms_url_row.addWidget(self.lmstudio_url, 1)
-        lms_docs = QPushButton("LM Studio docs")
-        lms_docs.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(LMSTUDIO_DOCS_URL)))
-        lms_url_row.addWidget(lms_docs)
-        form.addRow("LM Studio URL", lms_url_row)
-
+        lms_url_row.addWidget(self._website_button("Docs", LMSTUDIO_DOCS_URL))
+        self.lmstudio_url.setAccessibleName("LM Studio endpoint URL")
+        local.addRow("Endpoint", lms_url_row)
         lms_model_row = QHBoxLayout()
+        lms_model_row.setSpacing(8)
         lms_model_row.addWidget(self.lmstudio_model, 1)
         detect_btn = QPushButton("Detect models")
         detect_btn.clicked.connect(self._detect_lmstudio_models)
         lms_model_row.addWidget(detect_btn)
-        form.addRow("LM Studio model", lms_model_row)
-
+        self.lmstudio_model.setAccessibleName("LM Studio model")
+        local.addRow("Model", lms_model_row)
         self.lmstudio_key, lms_key_row = self._credential_row(saved_env["LMSTUDIO_API_KEY"])
-        form.addRow("LM Studio token (optional)", lms_key_row)
-        form.addRow("Memory history", self.memory_turns)
-        form.addRow("Color style", self.accent_mode_combo)
-        form.addRow("Solid accent", self.accent_button)
-        form.addRow("Gradient preset", self.gradient_preset_combo)
+        self.lmstudio_key.setAccessibleName("LM Studio token")
+        local.addRow("Optional token", lms_key_row)
 
-        grad_stops_row = QHBoxLayout()
-        grad_stops_row.addWidget(self.grad_start_btn, 1)
-        grad_stops_row.addWidget(self.grad_mid_btn, 1)
-        grad_stops_row.addWidget(self.grad_end_btn, 1)
-        form.addRow("Gradient stops", grad_stops_row)
+        search = self._studio_form()
+        self.tavily_key, tavily_row = self._credential_row(
+            saved_env["TAVILY_API_KEY"], self._website_button("Get key", TAVILY_API_KEY_URL)
+        )
+        self.tavily_key.setAccessibleName("Tavily search key")
+        search.addRow("Optional key", tavily_row)
+        provider_cards = [
+            self._studio_card("NVIDIA NIM", nvidia),
+            self._studio_card("Groq", groq),
+            self._studio_card("LM Studio", local),
+            self._studio_card("Tavily web search", search),
+        ]
 
+        self._theme_form = self._studio_form()
+        self._theme_form.addRow("Color style", self.accent_mode_combo)
+        self._theme_form.addRow("Accent", self.accent_button)
+        self._theme_form.addRow("Preset", self.gradient_preset_combo)
+        self._gradient_stops = QHBoxLayout()
+        self._gradient_stops.setSpacing(7)
+        for swatch in (self.grad_start_btn, self.grad_mid_btn, self.grad_end_btn):
+            self._gradient_stops.addWidget(swatch, 1)
+        self._theme_form.addRow("Gradient stops", self._gradient_stops)
         wheel_box = QHBoxLayout()
+        wheel_box.setSpacing(20)
         wheel_box.addWidget(self.color_wheel)
         wheel_controls = QVBoxLayout()
+        wheel_controls.setSpacing(8)
         wheel_controls.addWidget(self.wheel_target_label)
-        wheel_controls.addWidget(QLabel("Brightness"))
+        wheel_controls.addWidget(self._muted("Brightness"))
         wheel_controls.addWidget(self.wheel_brightness)
         hex_row = QHBoxLayout()
+        self.wheel_hex_input.setAccessibleName("Hex color")
         hex_row.addWidget(self.wheel_hex_input, 1)
+        self.wheel_system_btn.setText("System picker")
         hex_row.addWidget(self.wheel_system_btn)
         wheel_controls.addLayout(hex_row)
-        wheel_controls.addStretch(1)
         wheel_box.addLayout(wheel_controls, 1)
-        form.addRow("Colour wheel", wheel_box)
+        appearance = QVBoxLayout()
+        appearance.setSpacing(14)
+        appearance.addWidget(self._build_desklet_preview())
+        appearance.addLayout(self._theme_form)
+        appearance.addLayout(wheel_box)
 
-        form.addRow("Gradient preview", self.grad_preview)
+        system = QVBoxLayout()
+        system.setSpacing(10)
+        if IS_WINDOWS:
+            system.addWidget(self.startup_checkbox)
+            self.admin_tools_checkbox = QCheckBox("Allow requests for Windows administrator tools")
+            self.admin_tools_checkbox.setChecked(current.get("allowAdminToolRequests") is True)
+            system.addWidget(self.admin_tools_checkbox)
+            system.addWidget(self._muted(
+                "ZYLO can ask to open tools such as Windows Features, Services, and Event Viewer. "
+                "You approve each launch, then make changes in the Windows tool."
+            ))
 
-        self.skills_manager_btn = QPushButton("Manage Skills, Trust & History…")
+        self.skills_manager_btn = QPushButton("Manage skills")
         self.skills_manager_btn.clicked.connect(self._open_skill_manager)
-        form.addRow("PowerShell skills", self.skills_manager_btn)
+        skills = QHBoxLayout()
+        skills.addWidget(self._muted("Review trusted scripts and their execution history."), 1)
+        skills.addWidget(self.skills_manager_btn)
+        system_cards = [self._studio_card("PowerShell skills" if IS_WINDOWS else "Skills", skills)]
+        if IS_WINDOWS:
+            system_cards.insert(0, self._studio_card("Startup and permissions", system))
 
+        self._build_studio(
+            (
+                ("General", "Set your profile, preferred model provider, and conversation memory.", general_cards),
+                ("Providers", "Manage model connections. Leave any saved key field blank to keep it.", provider_cards),
+                ("Appearance", "Tune the colors and glow of your desklet.", [self._studio_card("Desklet theme", appearance)]),
+                ("System", "Manage startup, Windows tool approvals, and skills.", system_cards),
+            ),
+            show_desklet,
+        )
+        self._sync_gradient_preset_selection()
+        self._on_accent_mode_changed()
+        self.name.setFocus()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if IS_WINDOWS:
+            use_dark_title_bar(int(self.winId()))
+
+    @staticmethod
+    def _muted(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("StudioMuted")
+        label.setWordWrap(True)
+        return label
+
+    @staticmethod
+    def _website_button(text: str, address: str) -> QPushButton:
+        button = QPushButton(text)
+        button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(address)))
+        return button
+
+    @staticmethod
+    def _studio_form() -> QFormLayout:
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
+        return form
+
+    def _studio_card(self, title: str, content, description: str = "") -> QFrame:
+        card = QFrame()
+        card.setObjectName("StudioCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(19, 16, 19, 17)
+        layout.setSpacing(12)
+        heading = QLabel(title)
+        heading.setObjectName("StudioCardTitle")
+        layout.addWidget(heading)
+        if description:
+            layout.addWidget(self._muted(description))
+        layout.addLayout(content)
+        return card
+
+    def _build_desklet_preview(self) -> QFrame:
+        self.grad_preview = QFrame()
+        self.grad_preview.setObjectName("StudioPreviewRim")
+        self.grad_preview.setAccessibleName("Desklet preview")
+        rim = QVBoxLayout(self.grad_preview)
+        rim.setContentsMargins(2, 2, 2, 2)
+        surface = QFrame()
+        surface.setObjectName("StudioPreviewInner")
+        surface_layout = QVBoxLayout(surface)
+        surface_layout.setContentsMargins(14, 10, 14, 10)
+        surface_layout.setSpacing(6)
+        preview_name = QLabel()
+        preview_name.setObjectName("StudioPreviewName")
+        preview_name.setTextFormat(Qt.TextFormat.PlainText)
+
+        def update_name(name):
+            preview_name.setText((name.strip() or "ZYLO")[:32].upper())
+
+        update_name(self.name.text())
+        self.name.textChanged.connect(update_name)
+        surface_layout.addWidget(preview_name)
+        prompt = QLabel("Ask ZYLO")
+        prompt.setObjectName("StudioPreviewPrompt")
+        surface_layout.addWidget(prompt)
+        rim.addWidget(surface)
+        return self.grad_preview
+
+    def _build_studio(self, sections, show_desklet) -> None:
+        sidebar = QFrame()
+        sidebar.setObjectName("StudioSidebar")
+        sidebar.setFixedWidth(178)
+        navigation = QVBoxLayout(sidebar)
+        navigation.setContentsMargins(16, 22, 16, 18)
+        navigation.setSpacing(7)
+        logo = QLabel()
+        logo.setFixedSize(39, 39)
+        logo.setPixmap(self.windowIcon().pixmap(QSize(39, 39), self.devicePixelRatioF()))
+        brand_name = QLabel("ZYLO")
+        brand_name.setObjectName("StudioBrand")
+        brand = QHBoxLayout()
+        brand.setSpacing(8)
+        brand.addWidget(logo)
+        brand.addWidget(brand_name, 1)
+        navigation.addLayout(brand)
+        navigation.addSpacing(20)
+
+        self._settings_pages = QStackedWidget()
+        self._navigation_buttons = QButtonGroup(self)
+        self._section_indices = {}
+        for index, (name, description, cards) in enumerate(sections):
+            button = QPushButton(name)
+            button.setObjectName("StudioNav")
+            button.setCheckable(True)
+            self._navigation_buttons.addButton(button, index)
+            navigation.addWidget(button)
+            self._section_indices[name] = index
+
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(32, 23, 22, 0)
+            page_layout.setSpacing(7)
+            title = QLabel(name)
+            title.setObjectName("StudioTitle")
+            page_layout.addWidget(title)
+            page_layout.addWidget(self._muted(description))
+            page_layout.addSpacing(11)
+
+            content = QWidget()
+            content.setObjectName("StudioScrollContent")
+            content_layout = QVBoxLayout(content)
+            content_layout.setContentsMargins(0, 1, 10, 18)
+            content_layout.setSpacing(12)
+            for card in cards:
+                content_layout.addWidget(card)
+            content_layout.addStretch(1)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setWidget(content)
+            page_layout.addWidget(scroll, 1)
+            self._settings_pages.addWidget(page)
+
+        navigation.addStretch(1)
+        self._navigation_buttons.idClicked.connect(self._settings_pages.setCurrentIndex)
+        self._select_section("General")
+
+        footer = QFrame()
+        footer.setObjectName("StudioFooter")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(32, 13, 32, 13)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save)
+        save = buttons.button(QDialogButtonBox.StandardButton.Save)
+        save.setObjectName("StudioSave")
+        save.setText("Save changes")
+        save.setDefault(True)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         if show_desklet is not None:
-            desklet_button = buttons.addButton("Show Desklet", QDialogButtonBox.ButtonRole.ActionRole)
+            desklet_button = QPushButton("Show Desklet")
+            desklet_button.setObjectName("StudioShowDesklet")
             desklet_button.clicked.connect(lambda: show_desklet(self._theme_values()))
+            footer_layout.addWidget(desklet_button)
+            footer_layout.addStretch(1)
+        footer_layout.addWidget(buttons)
 
-        scroll_inner = QWidget()
-        scroll_layout = QVBoxLayout(scroll_inner)
-        scroll_layout.setContentsMargins(2, 2, 8, 2)
-        scroll_layout.addLayout(form)
-        if IS_WINDOWS:
-            scroll_layout.addWidget(self.startup_checkbox)
+        main = QVBoxLayout()
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
+        main.addWidget(self._settings_pages, 1)
+        main.addWidget(footer)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(sidebar)
+        layout.addLayout(main, 1)
 
-        scroll_area = QScrollArea(self)
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll_area.setWidget(scroll_inner)
+    def _select_section(self, name: str, field: QWidget | None = None) -> None:
+        index = self._section_indices[name]
+        self._navigation_buttons.button(index).setChecked(True)
+        self._settings_pages.setCurrentIndex(index)
+        if field is not None:
+            field.setFocus()
+            scroll = self._settings_pages.currentWidget().findChild(QScrollArea)
+            scroll.ensureWidgetVisible(field)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(title)
-        if self.is_activated:
-            activated = QLabel("ZYLO is already configured on this device. You can update your settings below.")
-            activated.setWordWrap(True)
-            activated.setStyleSheet("color: #75e0bd; font-weight: 600; padding: 6px 0")
-            layout.addWidget(activated)
-        layout.addWidget(description)
-        layout.addWidget(scroll_area, 1)
-        layout.addWidget(buttons)
-
-        self._on_accent_mode_changed()
 
     def accept(self):
         if save_setup(self):
@@ -475,6 +738,9 @@ class SetupDialog(QDialog):
 
     def _on_accent_mode_changed(self):
         is_grad = self.accent_mode_combo.currentData() == "gradient"
+        self._theme_form.setRowVisible(self.accent_button, not is_grad)
+        self._theme_form.setRowVisible(self.gradient_preset_combo, is_grad)
+        self._theme_form.setRowVisible(self._gradient_stops, is_grad)
         self.accent_button.setEnabled(not is_grad)
         self.gradient_preset_combo.setEnabled(is_grad)
         self.grad_start_btn.setEnabled(is_grad)
@@ -554,10 +820,10 @@ class SetupDialog(QDialog):
 
     def _sync_wheel_to_target(self) -> None:
         names = {
-            "solid": "Editing: Solid Accent",
-            "start": "Editing: Gradient Start",
-            "mid": "Editing: Gradient Mid",
-            "end": "Editing: Gradient End",
+            "solid": "Accent color",
+            "start": "Start color",
+            "mid": "Middle color",
+            "end": "End color",
         }
         hex_val = self._target_color()
         self.wheel_target_label.setText(names.get(self._active_wheel_target, "Editing color"))
@@ -593,25 +859,35 @@ class SetupDialog(QDialog):
             self._sync_wheel_to_target()
 
     def _show_accent(self):
-        def _btn_style(hex_col: str, active: bool) -> str:
-            border = "2px solid #ffffff" if active else "1px solid rgba(255,255,255,70)"
-            c = QColor(hex_col)
-            luma = 0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()
-            fg = "#142235" if luma > 135 else "#f8fafc"
-            return f"background: {hex_col}; color: {fg}; font-weight: 700; border-radius: 8px; padding: 6px; border: {border};"
-
-        self.accent_button.setText(self.accent)
-        self.accent_button.setStyleSheet(_btn_style(self.accent, self._active_wheel_target == "solid"))
-        self.grad_start_btn.setText(f"Start {self.gradient_start}")
-        self.grad_start_btn.setStyleSheet(_btn_style(self.gradient_start, self._active_wheel_target == "start"))
-        self.grad_mid_btn.setText(f"Mid {self.gradient_mid}")
-        self.grad_mid_btn.setStyleSheet(_btn_style(self.gradient_mid, self._active_wheel_target == "mid"))
-        self.grad_end_btn.setText(f"End {self.gradient_end}")
-        self.grad_end_btn.setStyleSheet(_btn_style(self.gradient_end, self._active_wheel_target == "end"))
-        self.grad_preview.setStyleSheet(
-            f"background: #1b132b; color: #f5f9ff; font-weight: 600; padding: 8px 12px; border-radius: 10px; "
-            f"border: 2px solid qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {self.gradient_start}, stop:0.5 {self.gradient_mid}, stop:1 {self.gradient_end});"
-        )
+        for button, target, label, color in (
+            (self.accent_button, "solid", "", self.accent),
+            (self.grad_start_btn, "start", "Start", self.gradient_start),
+            (self.grad_mid_btn, "mid", "Mid", self.gradient_mid),
+            (self.grad_end_btn, "end", "End", self.gradient_end),
+        ):
+            chip = QPixmap(32, 32)
+            chip.setDevicePixelRatio(2.0)
+            chip.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(chip)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(color))
+            painter.drawRoundedRect(QRectF(0, 0, 16, 16), 4, 4)
+            painter.end()
+            button.setObjectName("StudioSwatch")
+            button.setIcon(QIcon(chip))
+            button.setIconSize(QSize(16, 16))
+            button.setText(f"{label} {color.upper()}".strip())
+            button.setProperty("colorSelected", self._active_wheel_target == target)
+            button.style().unpolish(button)
+            button.style().polish(button)
+        rim = self.accent
+        if self.accent_mode_combo.currentData() == "gradient":
+            rim = (
+                "qlineargradient(x1:0, y1:0, x2:1, y2:0.65,"
+                f"stop:0 {self.gradient_start}, stop:0.52 {self.gradient_mid}, stop:1 {self.gradient_end})"
+            )
+        self.grad_preview.setStyleSheet(f"QFrame#StudioPreviewRim {{ background: {rim}; border-radius: 17px; }}")
 
     def _theme_values(self) -> dict[str, str]:
         return {
@@ -814,6 +1090,7 @@ def save_setup(dialog: SetupDialog) -> bool:
     values = dialog.values()
     if not values["name"]:
         QMessageBox.warning(dialog, "Name required", "Enter your name to continue.")
+        dialog._select_section("General", dialog.name)
         return False
 
     previous = read_env_keys()
@@ -829,6 +1106,7 @@ def save_setup(dialog: SetupDialog) -> bool:
             "NVIDIA API key required",
             "Enter an NVIDIA key, or switch Default provider to Groq or LM Studio.",
         )
+        dialog._select_section("Providers", dialog.key)
         return False
     if provider == "groq" and not groq_key:
         QMessageBox.warning(
@@ -836,6 +1114,7 @@ def save_setup(dialog: SetupDialog) -> bool:
             "Groq API key required",
             "Enter a Groq key, or switch Default provider to NVIDIA NIM or LM Studio.",
         )
+        dialog._select_section("Providers", dialog.groq_key)
         return False
 
     try:
@@ -849,6 +1128,14 @@ def save_setup(dialog: SetupDialog) -> bool:
             lmstudio_base_url=values["lmstudioBaseUrl"],
             lmstudio_model=values["lmstudioModel"],
             lmstudio_api_key=lms_key,
+            nvidia_backup_key=(
+                "" if dialog.remove_nvidia_backup.isChecked()
+                else dialog.nvidia_backup_key.text().strip() or previous["NVIDIA_BACKUP_API_KEY"]
+            ),
+            groq_backup_key=(
+                "" if dialog.remove_groq_backup.isChecked()
+                else dialog.groq_backup_key.text().strip() or previous["GROQ_BACKUP_API_KEY"]
+            ),
         )
         if IS_WINDOWS:
             set_windows_startup(bool(values.get("launchOnStartup", False)))
@@ -875,8 +1162,11 @@ def run_setup_dialog(parent=None, show_ready_popup: bool = True) -> bool:
 
 
 def main():
+    set_zylo_app_user_model_id()
     app = QApplication(sys.argv)
     app.setApplicationName("ZYLO")
+    app.setApplicationDisplayName("ZYLO Desktop Assistant")
+    app.setWindowIcon(zylo_app_icon())
     ok = run_setup_dialog(show_ready_popup=True)
     return 0 if ok else 1
 

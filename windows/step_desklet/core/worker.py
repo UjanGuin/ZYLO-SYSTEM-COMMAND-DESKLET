@@ -1,5 +1,6 @@
 import base64
 import json
+import math
 import os
 import re
 import shlex
@@ -8,9 +9,11 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import date
 from typing import Optional, Dict, List, Any, Callable, Tuple, Set
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 import requests
+from urllib3.exceptions import ReadTimeoutError
 
 from step_desklet.core.admin_tools import ADMIN_TOOLS, AdminToolRequest
 from step_desklet.core.skills import (
@@ -34,9 +37,11 @@ def _ps_quote(value: str) -> str:
 
 
 DEFAULT_NIM_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-DEFAULT_NIM_MODEL = "stepfun-ai/step-5-preview"
+DEFAULT_NIM_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+PREVIOUS_NIM_DEFAULT = "stepfun-ai/step-5-preview"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_BACKUP_WAIT_SECONDS = 16.0
 DEFAULT_LMSTUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
 DEFAULT_LMSTUDIO_MODEL = ""
 
@@ -110,14 +115,52 @@ class ProviderRateLimitError(RuntimeError):
         self.retry_after = retry_after
 
 
+class ProviderTimeoutError(RuntimeError):
+    """A request or gateway timed out."""
+
+    def __init__(self, message: str, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class GroqJSONGenerationError(RuntimeError):
+    """Groq rejected the generated completion in JSON object mode."""
+
+
+class NIMBadGatewayError(RuntimeError):
+    """NVIDIA's gateway could not get a usable upstream response."""
+
+
+_RETRY_DURATION = re.compile(r"(\d+(?:\.\d+)?)\s*(ms|[dhms])", re.IGNORECASE)
+_DURATION_UNITS = {"d": 86400, "h": 3600, "m": 60, "s": 1, "ms": 0.001}
+
+
+def _provider_retry_delay(response: requests.Response, detail: str) -> Optional[float]:
+    try:
+        seconds = float(response.headers.get("Retry-After", ""))
+        if math.isfinite(seconds) and seconds >= 0:
+            return seconds
+    except (TypeError, ValueError):
+        pass
+    match = re.search(r"\btry again in\s+((?:\d+(?:\.\d+)?\s*(?:ms|[dhms])\s*)+)", detail, re.IGNORECASE)
+    if match:
+        return sum(
+            float(number) * _DURATION_UNITS[unit.lower()]
+            for number, unit in _RETRY_DURATION.findall(match.group(1))
+        )
+    return None
+
+
 def _api_error(response: requests.Response, provider: str) -> RuntimeError:
     """Build a useful provider error without exposing request headers or keys."""
     detail = ""
+    code = ""
     try:
         body = response.json()
         error = body.get("error", body) if isinstance(body, dict) else body
         if isinstance(error, dict):
             detail = str(error.get("message") or error.get("detail") or "")
+            code = error.get("code") or ""
         elif isinstance(error, str):
             detail = error
     except (ValueError, requests.RequestException):
@@ -127,24 +170,29 @@ def _api_error(response: requests.Response, provider: str) -> RuntimeError:
     status = response.status_code
     if not detail:
         detail = response.reason or "The provider returned an error."
+    if provider == "Groq" and status == 400 and (
+        code == "json_validate_failed"
+        or "failed to generate json" in detail.lower()
+        or "failed to validate json" in detail.lower()
+    ):
+        return GroqJSONGenerationError(f"Groq request failed: HTTP {status}. {detail}")
     if status == 401 or status == 403:
         detail = f"API key or model access was rejected (HTTP {status}). {detail}"
     elif status == 429:
         message = f"{provider} rate limit or quota reached (HTTP 429). {detail}"
-        retry_after = None
-        raw_delay = response.headers.get("Retry-After", "").strip()
-        try:
-            retry_after = float(raw_delay)
-        except ValueError:
-            match = re.search(r"try again in\s+(\d+(?:\.\d+)?)\s*s", detail, re.IGNORECASE)
-            if match:
-                retry_after = float(match.group(1))
-        return ProviderRateLimitError(message, retry_after)
+        return ProviderRateLimitError(message, _provider_retry_delay(response, detail))
+    elif status in (408, 504):
+        return ProviderTimeoutError(
+            f"{provider} request timed out (HTTP {status}). {detail}", _provider_retry_delay(response, detail)
+        )
     elif status >= 500:
         detail = f"{provider} is temporarily unavailable (HTTP {status}). {detail}"
     else:
         detail = f"HTTP {status}. {detail}"
-    return RuntimeError(f"{provider} request failed: {detail}")
+    message = f"{provider} request failed: {detail}"
+    if provider == "NVIDIA NIM" and status == 502:
+        return NIMBadGatewayError(message)
+    return RuntimeError(message)
 
 
 def _content_text(content: Any) -> str:
@@ -164,16 +212,11 @@ def _content_text(content: Any) -> str:
     return ""
 
 
-class NIMChatClient:
-    """Requests-based NVIDIA NIM chat client with streamed SSE collection and cancellation."""
-
-    def __init__(self, api_key: str, api_url: str = DEFAULT_NIM_API_URL):
-        if not api_key:
-            raise RuntimeError(
-                f"NVIDIA API key missing. Set NVIDIA_API_KEY or NIM_API_KEY in {ENV_HINT_PATH}."
-            )
+class _CloudChatClient:
+    def __init__(self, api_key: str, backup_api_key: str):
         self.api_key = api_key
-        self.api_url = (api_url or DEFAULT_NIM_API_URL).rstrip("/")
+        backup = backup_api_key.strip()
+        self._backup_api_key = backup if backup != api_key else ""
         self._cancel_event = threading.Event()
         self._session = requests.Session()
 
@@ -183,6 +226,28 @@ class NIMChatClient:
             self._session.close()
         except Exception:
             pass
+
+    def _use_backup(self, provider: str, status_callback: Optional[Callable[[str], None]]) -> bool:
+        if self._cancel_event.is_set():
+            raise OperationCancelledError("Operation cancelled.")
+        if not self._backup_api_key:
+            return False
+        self.api_key, self._backup_api_key = self._backup_api_key, ""
+        if status_callback:
+            status_callback(f"Retrying with the {provider} backup key.")
+        return True
+
+
+class NIMChatClient(_CloudChatClient):
+    """Requests-based NVIDIA NIM chat client with streamed SSE collection and cancellation."""
+
+    def __init__(self, api_key: str, api_url: str = DEFAULT_NIM_API_URL, *, backup_api_key: str = ""):
+        if not api_key:
+            raise RuntimeError(
+                f"NVIDIA API key missing. Set NVIDIA_API_KEY or NIM_API_KEY in {ENV_HINT_PATH}."
+            )
+        super().__init__(api_key, backup_api_key)
+        self.api_url = (api_url or DEFAULT_NIM_API_URL).rstrip("/")
 
     def complete(
         self,
@@ -196,13 +261,7 @@ class NIMChatClient:
         presence_penalty: float = 0.0,
         status_callback: Optional[Callable[[str], None]] = None,
     ) -> str:
-        if self._cancel_event.is_set():
-            raise OperationCancelledError("Operation cancelled.")
-        stream = False
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Accept": "text/event-stream" if stream else "application/json",
-        }
+        stream = model == DEFAULT_NIM_MODEL
         payload = {
             "messages": messages,
             "model": model,
@@ -212,6 +271,40 @@ class NIMChatClient:
             "top_p": top_p,
             "frequency_penalty": frequency_penalty,
             "presence_penalty": presence_penalty,
+        }
+        if stream:
+            payload.update(
+                temperature=1,
+                top_p=0.95,
+                max_tokens=16384,
+                parallel_tool_calls=True,
+                seed=42,
+                chat_template_kwargs={"enable_thinking": True},
+            )
+            payload.pop("frequency_penalty")
+            payload.pop("presence_penalty")
+        retried_bad_gateway = False
+        while True:
+            if self._cancel_event.is_set():
+                raise OperationCancelledError("Operation cancelled.")
+            try:
+                return self._complete_with_key(payload, stream)
+            except NIMBadGatewayError:
+                if retried_bad_gateway:
+                    raise
+                retried_bad_gateway = True
+                if status_callback:
+                    status_callback("NVIDIA is temporarily unavailable. Retrying…")
+                if self._cancel_event.wait(1.0):
+                    raise OperationCancelledError("Operation cancelled.")
+            except (ProviderRateLimitError, ProviderTimeoutError):
+                if not self._use_backup("NVIDIA", status_callback):
+                    raise
+
+    def _complete_with_key(self, payload: dict, stream: bool) -> str:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Accept": "text/event-stream" if stream else "application/json",
         }
         try:
             response = self._session.post(
@@ -225,6 +318,8 @@ class NIMChatClient:
                 error = _api_error(response, "NVIDIA NIM")
                 response.close()
                 raise error
+        except requests.Timeout as exc:
+            raise ProviderTimeoutError("NVIDIA NIM request timed out.") from exc
         except requests.RequestException as exc:
             if self._cancel_event.is_set():
                 raise OperationCancelledError("Operation cancelled.") from exc
@@ -234,44 +329,57 @@ class NIMChatClient:
             response.close()
             raise OperationCancelledError("Operation cancelled.")
 
-        if not stream:
+        if not stream or response.headers.get("Content-Type", "").lower().startswith("application/json"):
             try:
                 return self._extract_non_stream_content(response.json())
             finally:
                 response.close()
 
         chunks: List[str] = []
+        finish_reason = None
+        done = False
         try:
             for line in response.iter_lines():
+                if self._cancel_event.is_set():
+                    raise OperationCancelledError("Operation cancelled.")
                 if not line:
                     continue
                 if isinstance(line, bytes):
                     line = line.decode("utf-8", errors="replace")
                 data = line[5:].strip() if line.startswith("data:") else line.strip()
                 if data == "[DONE]":
+                    done = True
                     break
                 try:
                     event = json.loads(data)
                 except json.JSONDecodeError:
                     continue
-                for choice in event.get("choices", []):
-                    delta = choice.get("delta", {})
-                    content = delta.get("content")
-                    if isinstance(content, str):
-                        chunks.append(content)
-                    elif isinstance(content, list):
-                        chunks.extend(
-                            str(part.get("text", ""))
-                            for part in content
-                            if isinstance(part, dict) and part.get("type") in {"text", "output_text"}
-                        )
-        except RuntimeError:
-            raise
+                if not isinstance(event, dict):
+                    continue
+                if event.get("error"):
+                    raise RuntimeError("NVIDIA NIM returned an error during the answer stream.")
+                choices = event.get("choices") or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                finish_reason = choice.get("finish_reason") or finish_reason
+                delta = choice.get("delta") or {}
+                chunks.append(_content_text(delta.get("content")))
         except requests.RequestException as exc:
+            if self._cancel_event.is_set():
+                raise OperationCancelledError("Operation cancelled.") from exc
+            if isinstance(exc, requests.Timeout) or any(isinstance(arg, ReadTimeoutError) for arg in exc.args):
+                raise ProviderTimeoutError("NVIDIA NIM answer stream timed out.") from exc
             raise RuntimeError(f"NVIDIA NIM stream interrupted: {exc}") from exc
         finally:
             response.close()
 
+        if self._cancel_event.is_set():
+            raise OperationCancelledError("Operation cancelled.")
+        if finish_reason == "length":
+            raise RuntimeError("NVIDIA NIM used its response limit before finishing the answer. Try a shorter request.")
+        if not done and not finish_reason:
+            raise RuntimeError("NVIDIA NIM stream ended before the answer was complete.")
         content = "".join(chunks).strip()
         if not content:
             raise RuntimeError("NVIDIA NIM returned an empty response.")
@@ -293,22 +401,13 @@ class NIMChatClient:
         raise RuntimeError("NVIDIA NIM returned an empty response.")
 
 
-class GroqChatClient:
+class GroqChatClient(_CloudChatClient):
     """Groq chat completions client using the OpenAI-compatible JSON API."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, *, backup_api_key: str = ""):
         if not api_key:
             raise RuntimeError(f"Groq API key missing. Set GROQ_API_KEY in {ENV_HINT_PATH}.")
-        self.api_key = api_key
-        self._cancel_event = threading.Event()
-        self._session = requests.Session()
-
-    def cancel(self) -> None:
-        self._cancel_event.set()
-        try:
-            self._session.close()
-        except Exception:
-            pass
+        super().__init__(api_key, backup_api_key)
 
     def complete(
         self,
@@ -320,10 +419,6 @@ class GroqChatClient:
     ) -> str:
         if self._cancel_event.is_set():
             raise OperationCancelledError("Operation cancelled.")
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Accept": "application/json",
-        }
         payload = {
             "model": model or GROQ_MODEL,
             "messages": messages,
@@ -343,127 +438,115 @@ class GroqChatClient:
             "stop": None,
         }
         rate_retries = 0
-        tool_retries = 0
-        format_retries = 0
+        short_timeout_retried = False
+        tool_retried = False
+        format_retried = False
         while True:
             if self._cancel_event.is_set():
                 raise OperationCancelledError("Operation cancelled.")
+            headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"}
+            started = time.monotonic()
             try:
                 response = self._session.post(
                     GROQ_API_URL, headers=headers, json=payload, stream=False, timeout=(10, 180)
                 )
+            except requests.Timeout as exc:
+                elapsed = time.monotonic() - started
+                if elapsed >= GROQ_BACKUP_WAIT_SECONDS and self._use_backup("Groq", status_callback):
+                    rate_retries = 0
+                    short_timeout_retried = False
+                    continue
+                if elapsed < GROQ_BACKUP_WAIT_SECONDS and not short_timeout_retried:
+                    short_timeout_retried = True
+                    continue
+                if self._cancel_event.is_set():
+                    raise OperationCancelledError("Operation cancelled.") from exc
+                raise ProviderTimeoutError("Groq request timed out.") from exc
             except requests.RequestException as exc:
                 if self._cancel_event.is_set():
                     raise OperationCancelledError("Operation cancelled.") from exc
                 raise RuntimeError(f"Groq request failed: {exc}") from exc
+
             if response.ok:
-                break
-            error = _api_error(response, "Groq")
-            response.close()
-            if (
-                rate_retries < 2
-                and isinstance(error, ProviderRateLimitError)
-                and error.retry_after is not None
-                and 0 < error.retry_after <= 60
-            ):
-                rate_retries += 1
-                if status_callback:
-                    status_callback(f"Waiting for Groq quota ({int(error.retry_after + 0.999)}s)…")
-                if self._cancel_event.wait(error.retry_after + 0.2):
-                    raise OperationCancelledError("Operation cancelled.")
-                continue
-            error_text = str(error).lower()
-            if (
-                format_retries < 1
-                and "failed to validate json" in error_text
-            ):
-                # GPT-OSS can occasionally fail Groq's JSON-mode validator even
-                # when asked for a JSON object. Retry in plain text and let the
-                # worker's existing JSON repair path validate the returned text.
-                format_retries += 1
-                payload.pop("response_format", None)
-                payload["temperature"] = 0.2
-                payload["messages"] = list(messages) + [{
-                    "role": "user",
-                    "content": (
-                        "Your previous response failed JSON validation. Return exactly one "
-                        "valid JSON object as message text using the required action format. "
-                        "Do not call or request tools."
-                    ),
-                }]
-                if status_callback:
-                    status_callback("Retrying Groq in plain JSON text mode…")
-                continue
-            if (
-                tool_retries < 1
-                and "tool choice is none" in error_text
-                and "model called a tool" in error_text
-            ):
-                tool_retries += 1
-                payload["temperature"] = 0.2
-                payload["messages"] = list(messages) + [{
-                    "role": "user",
-                    "content": (
-                        "Retry this response as JSON text in the message body. Do not call, "
-                        "request, or mention any tools. Follow the required JSON action format."
-                    ),
-                }]
-                if status_callback:
-                    status_callback("Retrying Groq without tool calls…")
-                continue
-            raise error
-        try:
-            body = response.json()
-        finally:
-            response.close()
-        try:
-            choice = body["choices"][0]
-            content = _content_text(choice.get("message", {}).get("content")).strip()
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError("Groq returned an unexpected completion response.") from exc
-        if not content:
-            message = choice.get("message", {})
-            if (
-                tool_retries < 1
-                and (choice.get("finish_reason") == "tool_calls" or message.get("tool_calls"))
-            ):
-                payload["temperature"] = 0.2
-                payload["messages"] = list(messages) + [{
-                    "role": "user",
-                    "content": (
-                        "Your previous response attempted a tool call. Return the required "
-                        "JSON action directly as message text; do not call any tools."
-                    ),
-                }]
-                if status_callback:
-                    status_callback("Retrying Groq without tool calls…")
                 try:
-                    retry_response = self._session.post(
-                        GROQ_API_URL, headers=headers, json=payload, stream=False, timeout=(10, 180)
-                    )
-                except requests.RequestException as exc:
-                    if self._cancel_event.is_set():
-                        raise OperationCancelledError("Operation cancelled.") from exc
-                    raise RuntimeError(f"Groq request failed: {exc}") from exc
-                if not retry_response.ok:
-                    retry_error = _api_error(retry_response, "Groq")
-                    retry_response.close()
-                    raise retry_error
-                try:
-                    retry_body = retry_response.json()
-                finally:
-                    retry_response.close()
-                try:
-                    retry_choice = retry_body["choices"][0]
-                    retry_content = _content_text(retry_choice.get("message", {}).get("content")).strip()
-                except (KeyError, IndexError, TypeError) as exc:
+                    choice = response.json()["choices"][0]
+                    message = choice.get("message", {})
+                    content = _content_text(message.get("content")).strip()
+                except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
                     raise RuntimeError("Groq returned an unexpected completion response.") from exc
-                if retry_content:
-                    return retry_content
-            if choice.get("finish_reason") == "length":
-                raise RuntimeError("Groq reached its output limit before returning answer text. Try a shorter request.")
-            raise RuntimeError("Groq returned an empty response.")
-        return content
+                finally:
+                    response.close()
+                if content:
+                    return content
+                if tool_retried or not (choice.get("finish_reason") == "tool_calls" or message.get("tool_calls")):
+                    if choice.get("finish_reason") == "length":
+                        raise RuntimeError("Groq reached its output limit before returning answer text. Try a shorter request.")
+                    raise RuntimeError("Groq returned an empty response.")
+            else:
+                try:
+                    error = _api_error(response, "Groq")
+                finally:
+                    response.close()
+                if isinstance(error, (ProviderRateLimitError, ProviderTimeoutError)):
+                    wait = error.retry_after
+                    if wait is None and isinstance(error, ProviderTimeoutError):
+                        wait = time.monotonic() - started
+                    if wait is not None and wait >= GROQ_BACKUP_WAIT_SECONDS and self._use_backup(
+                        "Groq", status_callback
+                    ):
+                        rate_retries = 0
+                        short_timeout_retried = False
+                        continue
+                    if (
+                        isinstance(error, ProviderTimeoutError)
+                        and error.retry_after is None
+                        and wait is not None
+                        and wait < GROQ_BACKUP_WAIT_SECONDS
+                        and not short_timeout_retried
+                    ):
+                        short_timeout_retried = True
+                        continue
+                if (
+                    rate_retries < 2
+                    and isinstance(error, (ProviderRateLimitError, ProviderTimeoutError))
+                    and error.retry_after is not None
+                    and 0 <= error.retry_after <= 60
+                ):
+                    rate_retries += 1
+                    if status_callback:
+                        status_callback(f"Waiting to retry Groq ({math.ceil(error.retry_after)}s).")
+                    if self._cancel_event.wait(error.retry_after + 0.2):
+                        raise OperationCancelledError("Operation cancelled.")
+                    continue
+                if isinstance(error, GroqJSONGenerationError) and not format_retried:
+                    # Allow more room for reasoning and the answer. The worker still
+                    # checks the returned JSON text against the desklet protocol.
+                    format_retried = True
+                    payload.pop("response_format", None)
+                    payload["temperature"] = 0.2
+                    payload["max_completion_tokens"] = 4096
+                    payload["messages"] = list(messages) + [{
+                        "role": "user",
+                        "content": (
+                            "Return exactly one valid JSON object as message text using the required action format. "
+                            "Do not call or request tools."
+                        ),
+                    }]
+                    if status_callback:
+                        status_callback("Retrying Groq's response.")
+                    continue
+                error_text = str(error).lower()
+                if tool_retried or "tool choice is none" not in error_text or "model called a tool" not in error_text:
+                    raise error
+
+            tool_retried = True
+            payload["temperature"] = 0.2
+            payload["messages"] = list(messages) + [{
+                "role": "user",
+                "content": "Return the required JSON action as message text. Do not call or request tools.",
+            }]
+            if status_callback:
+                status_callback("Retrying Groq without tool calls.")
 
 
 def normalize_lmstudio_base_url(base_url: str = "") -> str:
@@ -865,12 +948,21 @@ class StepAIWorker(QObject):
     ) -> str | AdminToolRequest:
         persisted = self._load_conversation() if self.conversation_path else self.messages[1:]
         installed_skills = discover_skills()
-        turn_system_prompt = SYSTEM_PROMPT + "\n\n" + format_skills_prompt_block(installed_skills)
+        turn_system_prompt = SYSTEM_PROMPT
+        if IS_WINDOWS:
+            turn_system_prompt += (
+                f"\n\nToday's local date from the Windows system clock is {date.today().isoformat()} (YYYY-MM-DD). "
+                "Use it to answer local calendar questions directly. Keep it in the background and mention the "
+                "current date, month, or year only when the user asks for it or it is needed for the answer."
+            )
+        turn_system_prompt += "\n\n" + format_skills_prompt_block(installed_skills)
         if self.allow_admin_tool_requests:
             tools = ", ".join(f"{tool_id} ({tool.label})" for tool_id, tool in ADMIN_TOOLS.items())
             turn_system_prompt += (
                 "\n\nWhen the user explicitly asks to open a supported Windows tool with administrator access, "
                 'respond with {"mode":"admin_tool","tool":"<tool-id>"}. Only request one tool. '
+                'When the user asks to enable or disable a Windows optional feature, use {"mode":"admin_tool",'
+                '"tool":"windows-features"} so they can review and apply the change in Windows Features. '
                 f"Allowed tools: {tools}. The app asks the user to approve the launch. "
                 "A request is not proof that a tool was launched."
             )
@@ -1873,6 +1965,7 @@ class StepAIWorker(QObject):
                         timeout=min(0.15, remaining),
                     )
                     pending_input = None
+                    cancelled = self._cancel_event.is_set()
                     break
                 except subprocess.TimeoutExpired:
                     pending_input = None

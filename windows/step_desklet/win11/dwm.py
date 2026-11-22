@@ -167,6 +167,16 @@ def _hex_to_colorref(hex_color: str) -> int:
     return (b << 16) | (g << 8) | r
 
 
+def use_dark_title_bar(hwnd: int) -> None:
+    """Allow the native Windows title bar to follow the system's dark mode."""
+    if IS_WINDOWS and hwnd:
+        _, dwmapi, _ = _get_win32_libs()
+        dark = wintypes.BOOL(True)
+        dwmapi.DwmSetWindowAttribute(
+            wintypes.HWND(hwnd), DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(dark), ctypes.sizeof(dark)
+        )
+
+
 def apply_win11_acrylic(
     hwnd: int,
     accent_hex: str = "#a78bfa",

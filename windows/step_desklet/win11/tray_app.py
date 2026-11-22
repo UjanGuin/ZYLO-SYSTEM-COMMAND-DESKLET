@@ -1,6 +1,6 @@
 """Windows 11 System Tray companion and setup lifecycle manager for ZYLO."""
 
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction, QColor, QDesktopServices, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QSystemTrayIcon
 
@@ -10,6 +10,7 @@ from step_desklet.core.config import (
     get_settings_file,
     is_windows_startup_enabled,
     read_json_file,
+    refresh_local_date,
     set_windows_startup,
 )
 from step_desklet.core.skills import ensure_skills_directory
@@ -72,9 +73,11 @@ class ZyloWin11Controller:
         self.focus_monitor.desktop_focus_changed.connect(self._on_desktop_focus)
 
         self._desklet_enabled = True
-        self._desktop_focused = False
         self._is_shutting_down = False
         self._settings_window = None
+        self._local_date_timer = QTimer(self.desklet)
+        self._local_date_timer.setInterval(60_000)
+        self._local_date_timer.timeout.connect(refresh_local_date)
         self.app.aboutToQuit.connect(self.shutdown_cleanup)
         self._build_tray()
 
@@ -82,7 +85,6 @@ class ZyloWin11Controller:
         settings = read_json_file(get_settings_file())
 
         icon = create_zylo_tray_icon(settings)
-        self.app.setWindowIcon(icon)
         self.tray = QSystemTrayIcon(icon, self.app)
         self.tray.setToolTip("ZYLO Desktop Assistant · Windows 11")
         self.tray.activated.connect(self._on_tray_activated)
@@ -147,13 +149,13 @@ class ZyloWin11Controller:
     def _reset_memory(self) -> None:
         from step_desklet.core.config import get_conversation_file
 
+        self.desklet.clear_all()
         conv_file = get_conversation_file()
         try:
             if conv_file.exists():
                 conv_file.unlink()
         except OSError:
             pass
-        self.desklet.clear_all()
 
     def _open_skills_folder(self) -> None:
         skills_dir = ensure_skills_directory()
@@ -172,14 +174,11 @@ class ZyloWin11Controller:
             self.show_desklet()
 
     def _on_desktop_focus(self, focused: bool) -> None:
-        returned_to_desktop = focused and not self._desktop_focused
-        self._desktop_focused = focused
         if not self._desklet_enabled or self._is_shutting_down:
             return
-        if focused and (returned_to_desktop or self.desklet.isMinimized() or not self.desklet.isVisible()):
-            self.desklet.bring_to_desktop()
-        else:
-            self.desklet.restore_above_wallpaper()
+        if focused and self.desklet.isMinimized():
+            self.desklet.showNormal()
+        self.desklet.restore_above_wallpaper()
 
     def toggle_desklet_visibility(self) -> None:
         if self._desklet_enabled:
@@ -207,13 +206,6 @@ class ZyloWin11Controller:
             return
         if self._settings_window is None:
             window = SetupDialog(show_desklet=self.preview_desklet)
-            window.setWindowFlags(
-                Qt.WindowType.Window
-                | Qt.WindowType.WindowTitleHint
-                | Qt.WindowType.WindowSystemMenuHint
-                | Qt.WindowType.WindowMinimizeButtonHint
-                | Qt.WindowType.WindowCloseButtonHint
-            )
             window.finished.connect(self._settings_finished)
             self._settings_window = window
         self._settings_window.showNormal()
@@ -233,7 +225,6 @@ class ZyloWin11Controller:
         self.desklet.reload_settings()
         settings = read_json_file(get_settings_file())
         icon = create_zylo_tray_icon(settings)
-        self.app.setWindowIcon(icon)
         self.tray.setIcon(icon)
         self.startup_action.setChecked(is_windows_startup_enabled())
         self._sync_menu_labels()
@@ -248,6 +239,8 @@ class ZyloWin11Controller:
         self.focus_monitor.set_paused(False)
 
     def start(self, force_setup: bool = False) -> None:
+        refresh_local_date()
+        self._local_date_timer.start()
         settings = read_json_file(get_settings_file())
         needs_first_run = force_setup or not (settings.get("name") and get_env_file().exists())
         if self.startup_action.isChecked():
@@ -258,10 +251,12 @@ class ZyloWin11Controller:
             self.open_setup()
 
     def shutdown_cleanup(self) -> None:
-        """Controlled application shutdown: pause monitor, cancel/wait worker, destroy desklet."""
+        """Stop desktop monitoring and active requests before destroying the desklet."""
         if self._is_shutting_down:
             return
         self._is_shutting_down = True
+        self._local_date_timer.stop()
+        refresh_local_date()
         self.focus_monitor.stop()
         if self._settings_window is not None:
             self._settings_window.reject()

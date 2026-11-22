@@ -8,7 +8,10 @@ import tempfile
 import threading
 import time
 import unittest
+from copy import deepcopy
+from datetime import date
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from tests.test_support import PROJECT_DIR, ensure_runtime_stubs_if_missing
 
@@ -49,6 +52,197 @@ class _BlockingClient:
         return json.dumps({"mode": "final", "message": "should not reach"})
 
 
+class ProviderClientTests(unittest.TestCase):
+    @staticmethod
+    def _response(status: int, data: dict):
+        response = Mock(status_code=status, ok=status < 400, headers={})
+        response.json.return_value = data
+        return response
+
+    def test_nvidia_retries_an_upstream_502_on_the_current_key(self):
+        client = worker_mod.NIMChatClient("primary", backup_api_key="backup")
+        failed = self._response(502, {"error": {"message": "Upstream request failed."}})
+        answer = self._response(200, {"choices": [{"message": {"content": "Recovered."}}]})
+        answer.headers["Content-Type"] = "application/json"
+        with (
+            patch.object(client._session, "post", side_effect=[failed, answer]) as post,
+            patch.object(client._cancel_event, "wait", return_value=False) as wait,
+        ):
+            self.assertEqual(client.complete(model=worker_mod.DEFAULT_NIM_MODEL, messages=[]), "Recovered.")
+        self.assertEqual(
+            [call.kwargs["headers"]["Authorization"] for call in post.call_args_list],
+            ["Bearer primary", "Bearer primary"],
+        )
+        self.assertEqual(post.call_args_list[0].kwargs["json"], post.call_args_list[1].kwargs["json"])
+        wait.assert_called_once_with(1.0)
+        failed.close.assert_called_once()
+        answer.close.assert_called_once()
+
+    def test_nvidia_502_retry_is_bounded_and_can_be_cancelled(self):
+        for cancel, expected_calls, error in (
+            (False, 2, worker_mod.NIMBadGatewayError),
+            (True, 1, worker_mod.OperationCancelledError),
+        ):
+            with self.subTest(cancel=cancel):
+                client = worker_mod.NIMChatClient("primary", backup_api_key="backup")
+                failed = self._response(502, {"error": {"message": "Upstream request failed."}})
+                with (
+                    patch.object(client._session, "post", return_value=failed) as post,
+                    patch.object(client._cancel_event, "wait", return_value=cancel),
+                ):
+                    with self.assertRaises(error):
+                        client.complete(model=worker_mod.DEFAULT_NIM_MODEL, messages=[])
+                self.assertEqual(post.call_count, expected_calls)
+
+    def test_nvidia_switches_on_rate_limits_and_timeouts(self):
+        for failure in (
+            self._response(429, {"error": {"message": "Rate limit"}}),
+            self._response(504, {"error": {"message": "Gateway timeout"}}),
+            worker_mod.requests.Timeout(),
+        ):
+            with self.subTest(failure=failure):
+                client = worker_mod.NIMChatClient("primary", backup_api_key="backup")
+                answer = self._response(200, {"choices": [{"message": {"content": "Recovered."}}]})
+                answer.headers["Content-Type"] = "application/json"
+                with patch.object(client._session, "post", side_effect=[failure, answer, answer]) as post:
+                    self.assertEqual(client.complete(model=worker_mod.DEFAULT_NIM_MODEL, messages=[]), "Recovered.")
+                    client.complete(model=worker_mod.DEFAULT_NIM_MODEL, messages=[])
+                self.assertEqual(
+                    [call.kwargs["headers"]["Authorization"] for call in post.call_args_list],
+                    ["Bearer primary", "Bearer backup", "Bearer backup"],
+                )
+
+    def test_nvidia_does_not_switch_for_authentication_or_reuse_the_primary_after_failover(self):
+        for status, attempts in ((401, 1), (429, 2)):
+            with self.subTest(status=status):
+                client = worker_mod.NIMChatClient("primary", backup_api_key="backup")
+                response = self._response(status, {"error": {"message": "Rejected."}})
+                with patch.object(client._session, "post", return_value=response) as post:
+                    with self.assertRaisesRegex(RuntimeError, str(status)):
+                        client.complete(model=worker_mod.DEFAULT_NIM_MODEL, messages=[])
+                    self.assertEqual(post.call_count, attempts)
+
+    def test_groq_uses_the_reported_wait_to_choose_the_key(self):
+        for retry_after, message, expected in (
+            ("15.9", "Rate limit", "primary"),
+            ("16", "Rate limit", "backup"),
+            ("", "Please try again in 1m7.4s.", "backup"),
+        ):
+            with self.subTest(retry_after=retry_after, message=message):
+                client = worker_mod.GroqChatClient("primary", backup_api_key="backup")
+                limited = self._response(429, {"error": {"message": message}})
+                limited.headers["Retry-After"] = retry_after
+                answer = self._response(200, {"choices": [{"message": {"content": "Recovered."}}]})
+                with (
+                    patch.object(client._session, "post", side_effect=[limited, answer]) as post,
+                    patch.object(client._cancel_event, "wait", return_value=False) as wait,
+                ):
+                    self.assertEqual(client.complete(model=worker_mod.GROQ_MODEL, messages=[]), "Recovered.")
+                self.assertEqual(
+                    [call.kwargs["headers"]["Authorization"] for call in post.call_args_list],
+                    ["Bearer primary", f"Bearer {expected}"],
+                )
+                self.assertEqual(wait.call_count, int(expected == "primary"))
+
+    def test_groq_uses_the_elapsed_time_for_a_network_timeout(self):
+        for elapsed, expected in ((10, "primary"), (18, "backup")):
+            with self.subTest(elapsed=elapsed):
+                client = worker_mod.GroqChatClient("primary", backup_api_key="backup")
+                answer = self._response(200, {"choices": [{"message": {"content": "Recovered."}}]})
+                with (
+                    patch.object(client._session, "post", side_effect=[worker_mod.requests.Timeout(), answer]) as post,
+                    patch.object(worker_mod.time, "monotonic", side_effect=[0, elapsed, elapsed]),
+                ):
+                    client.complete(model=worker_mod.GROQ_MODEL, messages=[])
+                self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], f"Bearer {expected}")
+
+    def test_groq_retries_rejected_json_and_returns_a_valid_answer(self):
+        for error in (
+            {"message": "Failed to generate JSON. Please adjust your prompt. See 'failed_generation' for more details."},
+            {"code": "json_validate_failed", "message": "The generated document was rejected."},
+            {"message": "Failed to validate JSON."},
+        ):
+            with self.subTest(error=error):
+                client = worker_mod.GroqChatClient("test")
+                rejected = self._response(400, {"error": {**error, "failed_generation": "discard this text"}})
+                accepted = self._response(200, {
+                    "choices": [{"message": {"content": '{"mode":"final","message":"Recovered."}'}}],
+                })
+                replies = iter((rejected, accepted))
+                requests = []
+
+                def post(_url, *, json, **_options):
+                    requests.append(deepcopy(json))
+                    return next(replies)
+
+                worker = worker_mod.StepAIWorker(api_key="", client=client, model=worker_mod.GROQ_MODEL)
+                with patch.object(client._session, "post", side_effect=post):
+                    self.assertEqual(worker.process_request_sync("Say hello."), "Recovered.")
+                self.assertEqual(len(requests), 2)
+                original, retry = requests
+                self.assertEqual(original["response_format"], {"type": "json_object"})
+                self.assertNotIn("response_format", retry)
+                self.assertEqual(retry["tool_choice"], "none")
+                self.assertGreater(retry["max_completion_tokens"], original["max_completion_tokens"])
+                self.assertEqual(retry["messages"][:-1], original["messages"])
+                self.assertNotIn("discard this text", str(retry))
+                rejected.close.assert_called_once()
+                accepted.close.assert_called_once()
+
+    def test_groq_does_not_retry_unrelated_errors_or_repeat_json_recovery(self):
+        for error, expected_attempts in (
+            ({"message": "Unsupported request parameter", "code": "invalid_request_error"}, 1),
+            ({"message": "Failed to generate JSON", "code": "json_validate_failed"}, 2),
+        ):
+            with self.subTest(error=error):
+                client = worker_mod.GroqChatClient("test")
+                response = self._response(400, {"error": error})
+                with patch.object(client._session, "post", return_value=response) as post:
+                    with self.assertRaisesRegex(RuntimeError, "HTTP 400"):
+                        client.complete(model=worker_mod.GROQ_MODEL, messages=[])
+                    self.assertEqual(post.call_count, expected_attempts)
+
+    def test_nemotron_uses_streaming_and_only_collects_answer_content(self):
+        client = worker_mod.NIMChatClient("test")
+        response = self._response(200, {})
+        response.headers["Content-Type"] = "text/event-stream"
+        frames = [
+            {"choices": [{"delta": {"reasoning_content": "Hidden reasoning", "content": None}}]},
+            {"choices": []},
+            {"choices": [{"delta": {"content": '{"mode":"final",'}}]},
+            {"choices": [{"delta": {"content": [{"type": "text", "text": '"message":"Done."}'}]}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+        response.iter_lines.return_value = [
+            *(f"data: {json.dumps(frame)}".encode() for frame in frames),
+            b"data: [DONE]",
+        ]
+        with patch.object(client._session, "post", return_value=response) as post:
+            worker = worker_mod.StepAIWorker(api_key="", client=client)
+            self.assertEqual(worker.process_request_sync("Say hello."), "Done.")
+        self.assertEqual(post.call_args.args[0], "https://integrate.api.nvidia.com/v1/chat/completions")
+        self.assertTrue(post.call_args.kwargs["stream"])
+        request = post.call_args.kwargs["json"]
+        self.assertEqual(request["model"], "nvidia/nemotron-3.5-super-vl-120b-a12b")
+        self.assertEqual(request["temperature"], 1)
+        self.assertEqual(request["top_p"], 0.95)
+        self.assertEqual(request["max_tokens"], 16384)
+        self.assertTrue(request["parallel_tool_calls"])
+        self.assertEqual(request["seed"], 42)
+        self.assertEqual(request["chat_template_kwargs"], {"enable_thinking": True})
+        response.close.assert_called_once()
+
+    def test_nemotron_rejects_an_incomplete_stream(self):
+        client = worker_mod.NIMChatClient("test")
+        response = self._response(200, {})
+        response.headers["Content-Type"] = "text/event-stream"
+        response.iter_lines.return_value = [b'data: {"choices":[{"delta":{"content":"Partial answer"}}]}']
+        with patch.object(client._session, "post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "stream ended before the answer was complete"):
+                client.complete(model=worker_mod.DEFAULT_NIM_MODEL, messages=[])
+        response.close.assert_called_once()
+
+
 class WorkerOutcomeAndShutdownTests(unittest.TestCase):
     def _make_worker(self, client):
         return worker_mod.StepAIWorker(
@@ -56,6 +250,32 @@ class WorkerOutcomeAndShutdownTests(unittest.TestCase):
             client=client,
             initial_working_dir=tempfile.gettempdir(),
         )
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows Features approval")
+    def test_windows_features_request_goes_to_the_approval_flow(self):
+        answer = json.dumps({"mode": "admin_tool", "tool": "windows-features"})
+        client = _FakeClient([answer])
+        worker = worker_mod.StepAIWorker(api_key="", client=client, allow_admin_tool_requests=True)
+        with patch.object(worker, "_run_command") as command:
+            result = worker.process_request_sync("Open Windows Features to disable WSL.")
+        self.assertEqual(result, worker_mod.AdminToolRequest("windows-features"))
+        self.assertIn("review and apply the change in Windows Features", client.requests[0][0]["content"])
+        command.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows system date")
+    def test_worker_includes_the_current_pc_date_on_each_turn(self):
+        client = _FakeClient([])
+        worker = self._make_worker(client)
+        with patch.object(worker_mod, "date") as clock:
+            clock.today.return_value = date(2025, 12, 31)
+            worker.process_request_sync("What month is it?")
+            clock.today.return_value = date(2026, 1, 1)
+            worker.process_request_sync("And what year is it now?")
+
+        self.assertIn("2025-12-31", client.requests[0][0]["content"])
+        self.assertIn("2026-01-01", client.requests[1][0]["content"])
+        self.assertNotIn("2025-12-31", client.requests[1][0]["content"])
+        self.assertIn("only when the user asks for it or it is needed for the answer", client.requests[1][0]["content"])
 
     def test_classify_command_outcomes_all_five_states(self):
         self.assertEqual(

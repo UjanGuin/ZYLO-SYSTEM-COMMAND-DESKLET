@@ -25,6 +25,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 root = Path(sys.argv[1])
 files = [root / name for name in ("zylo_win11.py", "setup_app.py", "requirements.txt", "requirements-lock.txt")]
+files.append(root / "packaging" / "zylo.ico")
 files += sorted((root / "step_desklet").glob("*/*.py"))
 files += sorted((root / "zylo_skills").glob("*.ps1"))
 with ZipFile(sys.argv[2], "w", compression=ZIP_DEFLATED, compresslevel=9) as archive:

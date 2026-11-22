@@ -17,6 +17,7 @@ ADMIN_TOOLS = MappingProxyType({
     "event-viewer": AdminTool("Event Viewer", "mmc.exe", "eventvwr.msc"),
     "services": AdminTool("Services", "mmc.exe", "services.msc"),
     "task-manager": AdminTool("Task Manager", "Taskmgr.exe"),
+    "windows-features": AdminTool("Windows Features", "OptionalFeatures.exe"),
 })
 
 

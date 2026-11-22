@@ -2,11 +2,10 @@
 
 import os
 import math
-import time
 from typing import Optional
 
-from dotenv import load_dotenv
-from PyQt6.QtCore import Q_ARG, QMetaObject, QPoint, QPointF, QRectF, QSize, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
+from dotenv import dotenv_values
+from PyQt6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QConicalGradient,
@@ -52,16 +51,9 @@ from step_desklet.core.config import (
     load_layout_config,
     load_settings_config,
     read_provider,
+    refresh_local_date,
     write_json_file,
     write_provider,
-)
-from step_desklet.core.worker import (
-    DEFAULT_NIM_API_URL,
-    DEFAULT_NIM_MODEL,
-    GROQ_MODEL,
-    GroqChatClient,
-    LMStudioChatClient,
-    StepAIWorker,
 )
 from step_desklet.win11.admin_tools import launch_admin_tool
 from step_desklet.win11.dwm import (
@@ -70,6 +62,7 @@ from step_desklet.win11.dwm import (
     show_window_above_wallpaper,
 )
 from step_desklet.win11.focus_monitor import wallpaper_covering_window
+from step_desklet.win11.request_process import DeskletRequest
 
 
 def _outline_icon(kind: str, color: str) -> QPixmap:
@@ -188,6 +181,28 @@ class GradientGlassCard(QFrame):
         painter.end()
 
 
+class GradientInputShell(QFrame):
+    """Draw the input border with one gradient mapped across the whole outline."""
+
+    def __init__(self, card: GradientGlassCard):
+        super().__init__(card)
+        self._card = card
+        self.setContentsMargins(1, 1, 1, 1)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        bounds = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        outline = QPainterPath()
+        outline.addRoundedRect(bounds, 12.5, 12.5)
+        gradient = QLinearGradient(bounds.topLeft(), bounds.topRight())
+        for position, color in zip((0.0, 0.5, 1.0), self._card.colors):
+            gradient.setColorAt(position, color)
+        painter.fillPath(outline, QColor(9, 13, 22, 232))
+        painter.strokePath(outline, QPen(gradient, 1.0))
+        painter.end()
+
+
 class ZyloDeskletWindow(QWidget):
     """Floating Windows 11 Acrylic glass desklet for ZYLO Desktop Assistant."""
 
@@ -219,8 +234,8 @@ class ZyloDeskletWindow(QWidget):
         self._user_height: Optional[int] = self._layout_data["height"]
         self._anchor_pos = QPoint(self._layout_data["x"], self._layout_data["y"])
 
-        self._worker_thread: Optional[QThread] = None
-        self._worker: Optional[StepAIWorker] = None
+        self._request: Optional[DeskletRequest] = None
+        self._admin_prompt: Optional[QMessageBox] = None
         self._busy = False
         self._shutting_down = False
 
@@ -283,8 +298,8 @@ class ZyloDeskletWindow(QWidget):
 
         self.clear_btn = QPushButton(self.card)
         self.clear_btn.setObjectName("ZyloIconButton")
-        self.clear_btn.setToolTip("Clear response")
-        self.clear_btn.setAccessibleName("Clear response")
+        self.clear_btn.setToolTip("Stop work and clear response")
+        self.clear_btn.setAccessibleName("Stop work and clear response")
         self.clear_btn.setIconSize(QSize(16, 16))
         self.clear_btn.setFixedSize(28, 26)
         self.clear_btn.clicked.connect(self.clear_all)
@@ -342,7 +357,7 @@ class ZyloDeskletWindow(QWidget):
         card_layout.addStretch(1)
 
         # Input shell
-        self.input_shell = QFrame(self.card)
+        self.input_shell = GradientInputShell(self.card)
         self.input_shell.setObjectName("ZyloInputShell")
         input_layout = QHBoxLayout(self.input_shell)
         self.input_shell.setFixedHeight(34)
@@ -417,14 +432,12 @@ class ZyloDeskletWindow(QWidget):
             start = mid = end = cfg["accent"]
 
         self.card.configure_colors(start, mid, end)
+        self.input_shell.update()
         self.clear_btn.setIcon(QIcon(_outline_icon("clear", start)))
         self.send_btn.setIcon(QIcon(_outline_icon("send", "#101421")))
         self._sync_lock_button()
         start_color = QColor(start)
         hover = f"rgba({start_color.red()}, {start_color.green()}, {start_color.blue()}, 36)"
-        input_border = (
-            f"qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {start}, stop:0.5 {mid}, stop:1 {end})"
-        )
         send_bg = (
             f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {start}, stop:0.54 {mid}, stop:1 {end})"
         )
@@ -475,11 +488,6 @@ class ZyloDeskletWindow(QWidget):
                 font-size: 13.5px;
                 padding-top: 3px;
                 background: transparent;
-            }}
-            QFrame#ZyloInputShell {{
-                background-color: rgba(9, 13, 22, 232);
-                border: 1px solid {input_border};
-                border-radius: 13px;
             }}
             QLineEdit#ZyloInput {{
                 color: #f7fbff;
@@ -637,7 +645,7 @@ class ZyloDeskletWindow(QWidget):
             lms_model = self._settings.get("lmstudioModel") or "auto-loaded model"
             label = f"LM Studio · {lms_model} selected"
         else:
-            label = "NVIDIA · Step 5 selected"
+            label = "NVIDIA · Nemotron 3.5 Super selected"
         self.status_label.setText(label)
         self.status_label.show()
         self._fit_height()
@@ -645,13 +653,28 @@ class ZyloDeskletWindow(QWidget):
         self.provider_changed.emit(self._provider)
 
     def clear_all(self) -> None:
+        self._cancel_request()
         self._autoclear_timer.stop()
+        self._provider_status_timer.stop()
         self.response_label.clear()
         self.response_label.hide()
+        self.status_label.clear()
         self.status_label.hide()
         self.prompt_input.clear()
+        self._set_busy(False)
+        if not self._shutting_down:
+            self.prompt_input.setEnabled(True)
+            self.send_btn.setEnabled(True)
+            self.prompt_input.setFocus()
         self._fit_height()
-        self.prompt_input.setFocus()
+
+    def _cancel_request(self) -> None:
+        request, self._request = self._request, None
+        if request is not None:
+            request.cancel()
+        prompt, self._admin_prompt = self._admin_prompt, None
+        if prompt is not None:
+            prompt.reject()
 
     def _clear_response_only(self) -> None:
         self.response_label.clear()
@@ -667,12 +690,16 @@ class ZyloDeskletWindow(QWidget):
         prompt = self.prompt_input.text().strip()
         if not prompt or self._busy or self._shutting_down:
             return
+        refresh_local_date()
         self._provider_status_timer.stop()
         self._autoclear_timer.stop()
 
         env_path = get_env_file()
         if env_path.exists():
-            load_dotenv(str(env_path), override=True)
+            os.environ.update({
+                key: value for key, value in dotenv_values(env_path).items()
+                if value is not None and key not in {"NVIDIA_BACKUP_API_KEY", "GROQ_BACKUP_API_KEY"}
+            })
 
         self._set_busy(True)
         self.prompt_input.clear()
@@ -693,57 +720,34 @@ class ZyloDeskletWindow(QWidget):
             "allow_admin_tool_requests": self._settings.get("allowAdminToolRequests") is True,
         }
 
-        try:
-            if self._provider == "groq":
-                worker = StepAIWorker(
-                    api_key="",
-                    model=GROQ_MODEL,
-                    client=GroqChatClient(os.getenv("GROQ_API_KEY") or ""),
-                    **worker_options,
-                )
-            elif self._provider == "lmstudio":
-                lms_url = (
-                    os.getenv("LMSTUDIO_BASE_URL")
-                    or self._settings.get("lmstudioBaseUrl")
-                    or DEFAULT_LMSTUDIO_BASE_URL
-                )
-                lms_model = (
-                    os.getenv("LMSTUDIO_MODEL")
-                    or self._settings.get("lmstudioModel")
-                    or ""
-                )
-                lms_key = os.getenv("LMSTUDIO_API_KEY") or ""
-                worker = StepAIWorker(
-                    api_key="",
-                    model=lms_model,
-                    client=LMStudioChatClient(base_url=lms_url, model=lms_model, api_key=lms_key),
-                    **worker_options,
-                )
-            else:
-                worker = StepAIWorker(
-                    api_key=os.getenv("NVIDIA_API_KEY") or os.getenv("NIM_API_KEY") or "",
-                    api_url=os.getenv("NIM_API_URL", DEFAULT_NIM_API_URL),
-                    model=os.getenv("NIM_MODEL", DEFAULT_NIM_MODEL),
-                    **worker_options,
-                )
-        except Exception as exc:
-            self._finish_worker_error(str(exc))
+        request = DeskletRequest(self)
+        self._request = request
+        request.status.connect(self._on_worker_status)
+        request.outcome.connect(self._on_request_outcome)
+        request.start_request({
+            "prompt": prompt,
+            "provider": self._provider,
+            "options": worker_options,
+            "base_url": (
+                os.getenv("LMSTUDIO_BASE_URL")
+                or self._settings.get("lmstudioBaseUrl")
+                or DEFAULT_LMSTUDIO_BASE_URL
+            ),
+            "model": os.getenv("LMSTUDIO_MODEL") or self._settings.get("lmstudioModel") or "",
+        })
+
+    def _on_request_outcome(self, event: str, value: str) -> None:
+        if self.sender() is not self._request:
             return
-
-        thread = QThread(self)
-        self._worker = worker
-        self._worker_thread = thread
-        worker.moveToThread(thread)
-
-        worker.signals.status_update.connect(self._on_worker_status)
-        worker.signals.response_ready.connect(self._on_worker_response)
-        worker.signals.admin_tool_requested.connect(self._on_admin_tool_requested)
-        worker.signals.error_occurred.connect(self._finish_worker_error)
-        worker.signals.cancelled.connect(self._on_worker_cancelled)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        QMetaObject.invokeMethod(worker, "process_request", Qt.ConnectionType.QueuedConnection, Q_ARG(str, prompt))
-        thread.start()
+        self._request = None
+        if event == "response":
+            self._on_worker_response(value)
+        elif event == "admin_tool":
+            self._on_admin_tool_requested(value)
+        elif event == "cancelled":
+            self._on_worker_cancelled()
+        else:
+            self._finish_worker_error(value)
 
     def _on_worker_status(self, text: str) -> None:
         if self._shutting_down:
@@ -753,7 +757,6 @@ class ZyloDeskletWindow(QWidget):
         self._fit_height()
 
     def _on_worker_response(self, text: str) -> None:
-        self._cleanup_worker_thread()
         self._set_busy(False)
         if self._shutting_down:
             return
@@ -769,10 +772,7 @@ class ZyloDeskletWindow(QWidget):
         self._autoclear_timer.start(delay_ms)
         self.prompt_input.setFocus()
 
-    @pyqtSlot(str)
     def _on_admin_tool_requested(self, tool_id: str) -> None:
-        self._cleanup_worker_thread()
-        self._set_busy(False)
         if self._shutting_down:
             return
 
@@ -780,18 +780,36 @@ class ZyloDeskletWindow(QWidget):
         if tool is None or load_settings_config().get("allowAdminToolRequests") is not True:
             self._on_worker_response("This administrator tool request is unavailable.")
             return
-        choice = QMessageBox.question(
-            self,
+        prompt = QMessageBox(
+            QMessageBox.Icon.Question,
             "Windows administrator tool",
             f"Open {tool.label} with administrator access? Windows may show a User Account Control prompt.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+            self,
         )
-        if self._shutting_down:
+        prompt.setDefaultButton(QMessageBox.StandardButton.No)
+        prompt.setWindowModality(Qt.WindowModality.NonModal)
+        prompt.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._admin_prompt = prompt
+        prompt.finished.connect(lambda choice: self._finish_admin_prompt(tool_id, prompt, choice))
+        self._on_worker_status("Waiting for administrator approval.")
+        prompt.adjustSize()
+        area = self._available_screen_rect(self.frameGeometry().center())
+        if area is not None:
+            x = min(self.x(), area.right() - prompt.width())
+            below = self.geometry().bottom() + 8
+            y = below if below + prompt.height() <= area.bottom() else self.y() - prompt.height() - 8
+            prompt.move(max(x, area.left()), max(y, area.top()))
+        prompt.show()
+
+    def _finish_admin_prompt(self, tool_id: str, prompt: QMessageBox, choice: int) -> None:
+        if self._admin_prompt is not prompt:
             return
+        self._admin_prompt = None
         if choice != QMessageBox.StandardButton.Yes or load_settings_config().get("allowAdminToolRequests") is not True:
             self._on_worker_response("Administrator tool launch cancelled.")
             return
+        tool = ADMIN_TOOLS[tool_id]
         try:
             launched = launch_admin_tool(tool_id, int(self.winId()))
         except OSError as error:
@@ -801,7 +819,6 @@ class ZyloDeskletWindow(QWidget):
             self._on_worker_response(message)
 
     def _on_worker_cancelled(self) -> None:
-        self._cleanup_worker_thread()
         self._set_busy(False)
         if self._shutting_down:
             return
@@ -814,7 +831,6 @@ class ZyloDeskletWindow(QWidget):
         self.prompt_input.setFocus()
 
     def _finish_worker_error(self, error_text: str) -> None:
-        self._cleanup_worker_thread()
         self._set_busy(False)
         if self._shutting_down:
             return
@@ -826,45 +842,15 @@ class ZyloDeskletWindow(QWidget):
         self._fit_height()
         self.prompt_input.setFocus()
 
-    def _cleanup_worker_thread(self, wait_timeout_ms: int = 15000) -> None:
-        thread = self._worker_thread
-        if thread is not None:
-            if thread.isRunning():
-                thread.quit()
-                deadline = time.monotonic() + (max(500, int(wait_timeout_ms)) / 1000.0)
-                app = QApplication.instance()
-                while thread.isRunning() and time.monotonic() < deadline:
-                    if app is not None:
-                        app.processEvents()
-                    if thread.wait(50):
-                        break
-                if thread.isRunning():
-                    # Re-assert cancellation if anything is still lingering before final wait.
-                    if self._worker is not None:
-                        self._worker.request_cancel()
-                    thread.quit()
-                    thread.wait(3000)
-            self._worker_thread = None
-        self._worker = None
-
-    def shutdown(self, wait_timeout_ms: int = 15000) -> None:
-        """Controlled shutdown sequence:
-        1. Stop accepting new prompts.
-        2. Stop UI timers.
-        3. Request cancellation of any active AI request & subprocess.
-        4. Wait for the worker thread to finish cleanly before destruction.
-        """
-        if not self._shutting_down:
-            self._shutting_down = True
-            self.prompt_input.setEnabled(False)
-            self.send_btn.setEnabled(False)
-            self._autoclear_timer.stop()
-            self._provider_status_timer.stop()
-            self._glow_timer.stop()
-            if self._worker is not None:
-                self._worker.request_cancel()
-        self._cleanup_worker_thread(wait_timeout_ms=wait_timeout_ms)
-        self._set_busy(False)
+    def shutdown(self) -> None:
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self.prompt_input.setEnabled(False)
+        self.send_btn.setEnabled(False)
+        self.clear_all()
+        for request in self.findChildren(DeskletRequest):
+            request.waitForFinished(1000)
 
     def closeEvent(self, event) -> None:
         self.shutdown()

@@ -27,9 +27,7 @@ WINEVENTPROC = _CALLBACK_FACTORY(
     wintypes.DWORD,
 )
 
-# On Windows 11 24H2/26H2, clicking the wallpaper or pressing Win+D transfers
-# foreground focus to Progman, WorkerW, or Shell_TrayWnd (taskbar).
-DESKTOP_WINDOW_CLASSES = WALLPAPER_WINDOW_CLASSES | {
+TASKBAR_WINDOW_CLASSES = {
     "Shell_TrayWnd",
     "Shell_SecondaryTrayWnd",
     "NotifyIconOverflowWindow",
@@ -67,6 +65,12 @@ def configure_focus_prototypes(user32) -> None:
     if window_from_point is not None:
         window_from_point.argtypes = [wintypes.POINT]
         window_from_point.restype = wintypes.HWND
+
+    for name in ("IsWindowVisible", "IsIconic"):
+        check_window = getattr(user32, name, None)
+        if check_window is not None:
+            check_window.argtypes = [wintypes.HWND]
+            check_window.restype = wintypes.BOOL
 
     get_cls = getattr(user32, "GetClassNameW", None)
     if get_cls is not None:
@@ -123,7 +127,7 @@ def _get_foreground_info() -> tuple[int, str, int]:
 
 
 def _is_desktop_window(hwnd: int, class_name: str) -> bool:
-    if not hwnd or class_name in DESKTOP_WINDOW_CLASSES:
+    if class_name in WALLPAPER_WINDOW_CLASSES:
         return True
     if not IS_WINDOWS:
         return False
@@ -133,7 +137,22 @@ def _is_desktop_window(hwnd: int, class_name: str) -> bool:
     if root in (user32.GetShellWindow(), user32.GetDesktopWindow()):
         return True
     # A desktop icon view can report a child HWND. Check its containing shell window.
-    return root != hwnd and _get_window_class(user32, root) in DESKTOP_WINDOW_CLASSES
+    return root != hwnd and _get_window_class(user32, root) in WALLPAPER_WINDOW_CLASSES
+
+
+def _is_focus_handoff(hwnd: int, class_name: str) -> bool:
+    if not hwnd or class_name in TASKBAR_WINDOW_CLASSES:
+        return True
+    if not IS_WINDOWS or class_name in WALLPAPER_WINDOW_CLASSES:
+        return False
+    user32 = _get_user32()
+    root = user32.GetAncestor(hwnd, GA_ROOT)
+    return bool(root and root != hwnd and _get_window_class(user32, root) in TASKBAR_WINDOW_CLASSES)
+
+
+def _window_was_hidden_or_minimized(hwnd: int) -> bool:
+    user32 = _get_user32()
+    return not user32.IsWindowVisible(hwnd) or bool(user32.IsIconic(hwnd))
 
 
 def wallpaper_covering_window(hwnd: int) -> int | None:
@@ -168,6 +187,7 @@ class DesktopFocusMonitor(QObject):
         self._hwnd_provider = desklet_hwnd_provider
         self._pid = os.getpid()
         self._paused = False
+        self._last_app_hwnd = 0
         self._hook_handles: list[int] = []
         self._win_event_proc = None
 
@@ -233,7 +253,15 @@ class DesktopFocusMonitor(QObject):
         if self._paused:
             return
         fg_hwnd, class_name, fg_pid = _get_foreground_info()
+        if _is_focus_handoff(fg_hwnd, class_name):
+            # A taskbar click briefly owns focus during launches and app switches.
+            # Recover on a shell handoff only when the previous app actually left.
+            if self._last_app_hwnd and _window_was_hidden_or_minimized(self._last_app_hwnd):
+                self.desktop_focus_changed.emit(True)
+            return
         own_hwnd = int(self._hwnd_provider() or 0)
         is_own_process = fg_pid == self._pid or (fg_hwnd != 0 and fg_hwnd == own_hwnd)
         is_desktop = bool(fg_hwnd) and not is_own_process and _is_desktop_window(fg_hwnd, class_name)
+        if not is_desktop and not is_own_process:
+            self._last_app_hwnd = fg_hwnd
         self.desktop_focus_changed.emit(is_desktop)
