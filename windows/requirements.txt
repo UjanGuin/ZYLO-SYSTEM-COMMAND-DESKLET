@@ -1,0 +1,4 @@
+PyQt6==6.12.1
+python-dotenv==1.2.4
+requests==2.34.2
+tavily-python==0.8.5

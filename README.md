@@ -1,11 +1,15 @@
 # ZYLO Desktop Assistant
 
-ZYLO is a desktop assistant for Fedora Workstation. Its compact glass-style panel runs as a GNOME Shell extension on the desktop, while a separate launcher handles first-time setup and later changes to your profile, API keys, and accent color.
+ZYLO is a desktop assistant for Windows 11 and Fedora Workstation. On Fedora, its compact glass-style panel runs as a GNOME Shell extension on the desktop, while a separate launcher handles first-time setup and later changes to your profile, API keys, and accent color.
 
 <p align="center">
   <strong>NVIDIA NIM · Groq · Tavily web search · Fedora GNOME</strong><br>
   A small desktop surface for questions and workstation actions.
 </p>
+
+## Windows 11 x64
+
+Download [ZYLO-DESKLET.exe](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/download/windows-v1/ZYLO-DESKLET.exe) from the [Windows v1 release](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/tag/windows-v1). See the [Windows guide](windows/README.md) for installation, providers, gradient previews, administrator tool requests, and building from source.
 
 ## Desktop screenshots
 
@@ -41,7 +45,7 @@ The screenshots below are from the Fedora desktop.
 
 ### Fedora RPM package
 
-Download the [Fedora 45 RPM](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/packages/1.0.0/zylo-desktop-assistant-1.0.0-1.fc45.noarch.rpm) or browse the [GitHub release notes](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/latest), then install it with Fedora's package manager:
+Download the [Fedora 45 RPM](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/packages/1.0.0/zylo-desktop-assistant-1.0.0-1.fc45.noarch.rpm) or browse the [GitHub release notes](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/tag/v1.0.0), then install it with Fedora's package manager:
 
 ```bash
 sudo dnf install ./zylo-desktop-assistant-1.0.0-1.fc45.noarch.rpm
