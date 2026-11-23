@@ -7,6 +7,10 @@ ZYLO is a desktop assistant for Windows 11 and Fedora Workstation. On Fedora, it
   A small desktop surface for questions and workstation actions.
 </p>
 
+## Try ZYLO in your browser
+
+[Open the live ZYLO Desklet simulator](https://zylo-desklet.inspiringcondor1.chatgpt.site/) to try sample prompts, explore the settings, and find the Windows and Fedora downloads.
+
 ## Windows 11 x64
 
 Download [ZYLO-DESKLET.exe](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/download/windows-v2/ZYLO-DESKLET.exe) from the [Windows v2 release](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/tag/windows-v2). See the [Windows guide](windows/README.md) for installation, providers, gradient previews, administrator tool requests, and building from source.
