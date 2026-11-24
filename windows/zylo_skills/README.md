@@ -8,6 +8,29 @@ Drop any `.ps1` PowerShell script into this folder and **ZYLO** will automatical
   - Any script placed here overrides a bundled script with the same skill ID.
 - **Bundled Starter Skills**: Included automatically with ZYLO (`git_status_checker.ps1`, `media_controls.ps1`, `dev_shortcuts.ps1`).
 
+## Installed app lookup
+
+Say **Show all installed apps** to run the bundled `installed-apps` skill. It reads Windows registrations, Start menu and desktop shortcuts, and installer entries. **Open ComfyUI Desktop** checks for a local launcher first. ZYLO asks when multiple apps tie and uses the normal browser or search flow when no app matches. Portable apps without Windows registrations or shortcuts may be absent.
+
+Simple lookups and lists are handled on the PC. The skill can be disabled in **Manage Skills, Trust & History**.
+
+ZYLO saves the filtered catalog and uses it for future launches and app lists. If you save a Groq key, the first build can use Groq to filter app names. Launch paths stay on your PC. To refresh after installing or removing apps, use **Settings → System → Rebuild app list**. Uncheck **Use Groq to filter the app list** to filter locally.
+
+## Find and open a file
+
+Say **Open mayarkhela.pdf** to launch a single match, or **Find file mayarkhela.pdf** to show its location. ZYLO tries the exact name first, then allows differences in spaces, underscores, and hyphens. If several files match, it shows their paths so you can choose.
+
+| Folder under your Windows profile | Search depth |
+| --- | --- |
+| `Videos` | Folder itself and one level below |
+| `OneDrive\Pictures` | Folder itself and one level below |
+| `OneDrive\Music` | Folder itself and one level below |
+| `OneDrive\Documents` | Folder itself and two levels below |
+| `Downloads` | Three levels, counting Downloads as level one |
+| `OneDrive\Desktop` | Folder itself and two levels below |
+
+Use the full path to open a file outside this search area.
+
 ## Optional Metadata Headers
 Add up to 3 comment headers near the top of your `.ps1` file so the AI understands what your script does and what parameters it accepts:
 

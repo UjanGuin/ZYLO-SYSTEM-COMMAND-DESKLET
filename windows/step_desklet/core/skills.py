@@ -25,6 +25,13 @@ from step_desklet.core.config import (
 SKILL_ID_RE = re.compile(r"[^a-z0-9_-]+")
 PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MAX_SKILL_HISTORY_ENTRIES = 200
+_SUPERSEDED_BUNDLED_SKILLS = {
+    "media_controls.ps1": {"7df7a93b2bb26382fc2cdd83a7f1262ae52278282b36697889775a347f980c31"},
+    "installed_apps.ps1": {
+        "8b4ee1f812b9de924e1565d7e1ac2dcdcfd79b89d6a0da6d4c12de338ab199ff",
+        "b1e4dd2a79ee83043addbbdfb1bee303e578f059edb4f9cc4a52ac223b1d4386",
+    },
+}
 
 
 @dataclass
@@ -79,14 +86,20 @@ def get_user_skills_dir() -> Path:
 
 
 def ensure_skills_directory() -> Path:
-    """Create the user's zylo_skills/ directory and seed starter skills if empty."""
+    """Add newly shipped skills on upgrades without replacing user scripts."""
     user_dir = get_user_skills_dir()
     user_dir.mkdir(parents=True, exist_ok=True)
     bundled = _bundled_skills_dir()
-    if bundled.is_dir() and not any(user_dir.glob("*.ps1")):
+    if bundled.is_dir():
+        user_ids = {_parse_ps1_metadata(path, "user").skill_id for path in user_dir.glob("*.ps1")}
         for script in bundled.glob("*.ps1"):
             target = user_dir / script.name
-            if not target.exists():
+            if target.exists():
+                old_digests = _SUPERSEDED_BUNDLED_SKILLS.get(script.name.lower(), ())
+                should_copy = bool(old_digests) and compute_script_sha256(target) in old_digests
+            else:
+                should_copy = _parse_ps1_metadata(script, "bundled").skill_id not in user_ids
+            if should_copy:
                 try:
                     shutil.copy2(script, target)
                 except OSError:
@@ -204,20 +217,23 @@ def evaluate_skill_status(
     if revoked:
         return enabled, False, f"Skill '{skill.skill_id}' was explicitly untrusted by the user."
 
+    filename = skill.script_path.name.lower()
+    bundled_map = bundled_hashes if bundled_hashes is not None else _bundled_skill_hashes()
+    bundled_digest = bundled_map.get(filename, "").lower()
     trusted_entry = (pol.get("trusted") or {}).get(skill.skill_id)
     if trusted_entry:
         expected_hash = str(trusted_entry.get("sha256") or "").lower()
         if expected_hash and expected_hash == current_hash:
             return enabled, True, "Trusted via verified SHA-256 allowlist."
+        if current_hash == bundled_digest and expected_hash in _SUPERSEDED_BUNDLED_SKILLS.get(filename, ()):
+            return enabled, True, "Verified upgrade of the previously trusted built-in skill."
         return (
             enabled,
             False,
             f"Script contents changed since trust approval (expected {expected_hash[:12]}, got {current_hash[:12]}).",
         )
 
-    bundled_map = bundled_hashes if bundled_hashes is not None else _bundled_skill_hashes()
-    bundled_digest = bundled_map.get(skill.script_path.name.lower())
-    if bundled_digest and bundled_digest.lower() == current_hash:
+    if bundled_digest == current_hash:
         return enabled, True, "Verified built-in starter skill (matches bundled SHA-256)."
 
     return (

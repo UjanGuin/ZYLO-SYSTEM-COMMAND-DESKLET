@@ -112,6 +112,39 @@ class SkillSecurityAndHistoryTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("disabled", msg.lower())
 
+    def test_upgrade_adds_new_bundled_skills_to_existing_profiles(self):
+        user_dir = skills_mod.get_user_skills_dir()
+        user_dir.mkdir(parents=True, exist_ok=True)
+        existing = user_dir / "media_controls.ps1"
+        custom_source = "# @skill-name: media-controls\nWrite-Output 'custom'\n"
+        existing.write_text(custom_source, encoding="utf-8")
+
+        discovered = skills_mod.discover_skills()
+
+        for skill_id, filename in (("installed-apps", "installed_apps.ps1"), ("find-file", "find_file.ps1")):
+            self.assertEqual(discovered[skill_id].script_path, (user_dir / filename).resolve())
+            self.assertTrue(discovered[skill_id].trusted)
+        self.assertEqual(existing.read_text(encoding="utf-8"), custom_source)
+
+    def test_upgrade_replaces_only_the_verified_predecessor(self):
+        from unittest.mock import patch
+
+        folder = skills_mod.get_user_skills_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        old_script = folder / "installed_apps.ps1"
+        old_script.write_text("# @skill-name: installed-apps\nWrite-Output 'old'\n", encoding="utf-8")
+        old_digest = skills_mod.compute_script_sha256(old_script)
+        old = skills_mod.discover_skills()["installed-apps"]
+        skills_mod.trust_skill(old)
+
+        with patch.object(skills_mod, "_SUPERSEDED_BUNDLED_SKILLS", {"installed_apps.ps1": {old_digest}}):
+            refreshed = skills_mod.discover_skills()["installed-apps"]
+            self.assertNotEqual(refreshed.sha256, old_digest)
+            self.assertTrue(refreshed.trusted)
+            old_script.write_text("# @skill-name: installed-apps\nWrite-Output 'custom'\n", encoding="utf-8")
+            custom_digest = skills_mod.compute_script_sha256(old_script)
+            self.assertEqual(skills_mod.discover_skills()["installed-apps"].sha256, custom_digest)
+
     def test_worker_blocks_untrusted_skill_with_permission_outcome_and_logs_history(self):
         self._drop_custom_skill()
         client = _SkillCallClient("custom-probe")

@@ -1,10 +1,10 @@
 # ZYLO Desklet for Windows
 
-[Download ZYLO-DESKLET.exe](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/download/windows-v2/ZYLO-DESKLET.exe)
+[Download ZYLO-DESKLET.exe](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/download/windows-v2.2/ZYLO-DESKLET.exe)
 
-[Windows v2 release notes](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/tag/windows-v2)
+[Windows v2.2 release notes](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/tag/windows-v2.2)
 
-Windows v2 packages ZYLO 2.0.0 for Windows 11 x64. ZYLO is a desktop panel for asking questions and running everyday PowerShell tasks.
+Windows v2.2 packages ZYLO 2.2.0 for Windows 11 x64. ZYLO is a desktop panel for asking questions and running everyday PowerShell tasks.
 
 ## Install or upgrade
 
@@ -22,6 +22,14 @@ Windows v2 packages ZYLO 2.0.0 for Windows 11 x64. ZYLO is a desktop panel for a
 Add optional backup keys for NVIDIA and Groq. NVIDIA switches on a rate limit or request timeout. Groq retries on the active key for waits under 16 seconds and tries the backup for longer waits. NVIDIA retries HTTP 502 once on the current key. Groq retries rejected JSON generation once. Each prompt starts with its primary key.
 
 A Tavily key is optional for web search. A blank API key field keeps the saved value. ZYLO stores settings and credentials locally under `%APPDATA%\ZYLO`. Keep the `step-desklet.env` file private.
+
+## ZYLO for Windows v2.2
+
+- Settings save immediately. Pasted keys receive a background validation check, and a verified Groq key starts the app-list build when app filtering is enabled.
+- Exact Windows output volume commands are supported, including phrased requests such as "Set volume to 70%".
+- Conversation history rolls forward and keeps the configured number of complete exchanges.
+- ZYLO includes installed-app and file lookup, visible-window checks before app launches, alternate launchers, and a Gemini browser fallback.
+- Short Groq rate limits are handled with automatic retries.
 
 ## Use the desklet
 

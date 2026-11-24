@@ -23,7 +23,7 @@ from step_desklet.win11.dwm import (
     signal_settings_request,
     take_settings_request,
 )
-from step_desklet.win11.request_process import run_request_worker
+from step_desklet.win11.request_process import run_launch_worker, run_request_worker
 from step_desklet.win11.tray_app import ZyloWin11Controller
 
 
@@ -41,6 +41,8 @@ def listen_for_settings(handle, controller: ZyloWin11Controller) -> QTimer:
 def main() -> int:
     if sys.argv[1:] == ["--request-worker"]:
         return run_request_worker()
+    if sys.argv[1:] == ["--launch-item"]:
+        return run_launch_worker()
 
     parser = argparse.ArgumentParser(description="ZYLO Desktop Assistant for Windows 11 26H2")
     launch = parser.add_mutually_exclusive_group()

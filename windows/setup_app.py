@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QConicalGradient,
@@ -60,6 +60,7 @@ from step_desklet.core.config import (
     write_json_file,
     write_provider,
 )
+from step_desklet.core.installed_apps import catalog_names, load_app_catalog
 from step_desklet.core.skills import (
     clear_skill_history,
     discover_skills,
@@ -315,6 +316,10 @@ class SetupDialog(QDialog):
         self.setStyleSheet(SETTINGS_STYLE)
         current = load_settings_config()
         saved_env = read_env_keys()
+        self._catalog_draft = object()
+        self._key_checks = {}
+        self._flush_key_checks = []
+        self._verified_groq = ""
         accent_cfg = get_accent_config(current)
 
         self.name = QLineEdit(current.get("name", ""))
@@ -427,7 +432,7 @@ class SetupDialog(QDialog):
         memory.addRow("Conversation history", memory_row)
         general_cards = [
             self._studio_card("Profile", profile),
-            self._studio_card("Memory", memory, "Recent conversations are saved on this device."),
+            self._studio_card("Memory", memory, "Keeps the latest turns on this device. A turn is your message and ZYLO’s reply."),
         ]
 
         nvidia = self._studio_form()
@@ -451,6 +456,11 @@ class SetupDialog(QDialog):
         )
         self.groq_backup_key.setAccessibleName("Groq backup key")
         groq.addRow("Backup key", groq_backup_row)
+        if IS_WINDOWS:
+            groq.addRow(self._muted(
+                "Once the Groq key is verified, ZYLO can send installed app names to Groq to build "
+                "the list in the background. Launch paths stay on this PC. Control this in System."
+            ))
 
         local = self._studio_form()
         lms_url_row = QHBoxLayout()
@@ -534,13 +544,42 @@ class SetupDialog(QDialog):
         system_cards = [self._studio_card("PowerShell skills" if IS_WINDOWS else "Skills", skills)]
         if IS_WINDOWS:
             system_cards.insert(0, self._studio_card("Startup and permissions", system))
+            catalog_box = QVBoxLayout()
+            self.filter_apps_with_groq = QCheckBox("Use Groq to filter the app list")
+            self.filter_apps_with_groq.setChecked(current["filterAppsWithGroq"])
+            self._catalog_status = self._muted(self._app_catalog_summary())
+            self.rebuild_app_list_btn = QPushButton("Rebuild app list")
+            self.rebuild_app_list_btn.clicked.connect(self._rebuild_app_list)
+            from step_desklet.win11.setup_jobs import AppListJobs
+
+            self._catalog_jobs = AppListJobs.for_app()
+            self._catalog_jobs.changed.connect(self._refresh_app_list_status)
+            self.filter_apps_with_groq.toggled.connect(self._app_filter_changed)
+            self._refresh_app_list_status()
+            for field, row, provider in (
+                (self.key, key_row, "nim"),
+                (self.nvidia_backup_key, nvidia_backup_row, "nim"),
+                (self.groq_key, groq_row, "groq"),
+                (self.groq_backup_key, groq_backup_row, "groq"),
+                (self.tavily_key, tavily_row, "tavily"),
+                (self.lmstudio_key, lms_key_row, "lmstudio"),
+            ):
+                self._watch_key(field, row.itemAt(1).widget(), provider)
+            catalog_box.addWidget(self.filter_apps_with_groq)
+            catalog_box.addWidget(self._catalog_status)
+            catalog_box.addWidget(self.rebuild_app_list_btn, 0, Qt.AlignmentFlag.AlignLeft)
+            system_cards.append(self._studio_card(
+                "Installed app list", catalog_box,
+                "Rebuild after installing or removing apps. Groq receives names only. "
+                "Without a Groq key, ZYLO filters the list locally.",
+            ))
 
         self._build_studio(
             (
                 ("General", "Set your profile, preferred model provider, and conversation memory.", general_cards),
                 ("Providers", "Manage model connections. Leave any saved key field blank to keep it.", provider_cards),
                 ("Appearance", "Tune the colors and glow of your desklet.", [self._studio_card("Desklet theme", appearance)]),
-                ("System", "Manage startup, Windows tool approvals, and skills.", system_cards),
+                ("System", "Manage startup, Windows tools, skills, and the installed app list.", system_cards),
             ),
             show_desklet,
         )
@@ -717,8 +756,144 @@ class SetupDialog(QDialog):
 
 
     def accept(self):
-        if save_setup(self):
-            super().accept()
+        if not save_setup(self):
+            return
+        if IS_WINDOWS:
+            self._prepare_app_list(saved=True)
+            for flush in self._flush_key_checks:
+                flush()
+            self._key_checks.clear()
+        super().accept()
+
+    def reject(self):
+        if IS_WINDOWS:
+            self._catalog_jobs.cancel_draft(self._catalog_draft)
+            self._cancel_key_checks()
+        super().reject()
+
+    @staticmethod
+    def _app_catalog_summary() -> str:
+        catalog = load_app_catalog()
+        if catalog is None:
+            return "No saved app list yet."
+        source = "Groq" if catalog.source == "groq" else "Local filter"
+        return f"{len(catalog_names(catalog.apps))} saved apps · {source} · {catalog.updated}"
+
+    def _app_list_keys(self) -> tuple[str, str]:
+        if not self.filter_apps_with_groq.isChecked():
+            return "", ""
+        keys = read_env_keys()
+        primary = self.groq_key.text().strip() or keys["GROQ_API_KEY"]
+        backup = "" if self.remove_groq_backup.isChecked() else (
+            self.groq_backup_key.text().strip() or keys["GROQ_BACKUP_API_KEY"]
+        )
+        return primary, backup if primary else ""
+
+    def _rebuild_app_list(self):
+        primary, backup = self._app_list_keys()
+        self._catalog_jobs.start(
+            primary, backup, check_key=bool(primary and primary != self._verified_groq),
+            draft=self._catalog_draft,
+        )
+
+    def _refresh_app_list_status(self):
+        self.rebuild_app_list_btn.setEnabled(self._catalog_jobs.request is None)
+        self._catalog_status.setText(self._catalog_jobs.status or self._app_catalog_summary())
+
+    def _app_filter_changed(self, enabled: bool) -> None:
+        if not enabled:
+            self._catalog_jobs.cancel_draft(self._catalog_draft)
+        elif self._verified_groq:
+            self._prepare_app_list()
+
+    def _prepare_app_list(self, *, saved: bool = False) -> None:
+        primary, backup = self._app_list_keys()
+        jobs = self._catalog_jobs
+        same_job = jobs.credentials == (primary, backup)
+        if saved and jobs.draft is self._catalog_draft and same_job:
+            jobs.draft = None
+            return
+        if saved and jobs.request is not None and not same_job:
+            jobs.cancel()
+        if primary and not saved and primary != self._verified_groq:
+            return
+        catalog = load_app_catalog()
+        if catalog is None or (primary and catalog.source != "groq"):
+            jobs.start(
+                primary, backup, check_key=bool(primary and primary != self._verified_groq),
+                draft=None if saved else self._catalog_draft,
+            )
+
+    def _watch_key(self, field: QLineEdit, label: QLabel, provider: str) -> None:
+        from step_desklet.win11.request_process import DeskletRequest
+
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(450)
+        initial_label = label.text()
+
+        def changed():
+            timer.stop()
+            if previous := self._key_checks.pop(field, None):
+                previous.cancel()
+            if field is self.groq_key:
+                self._verified_groq = ""
+                self._catalog_jobs.cancel_draft(self._catalog_draft)
+            if field.text().strip() and field.isEnabled():
+                label.setText("Checking...")
+                timer.start()
+            else:
+                label.setText(initial_label)
+
+        def check():
+            key = field.text().strip()
+            if not key or not field.isEnabled():
+                return
+            app = QApplication.instance()
+            request = DeskletRequest(app)
+            app.aboutToQuit.connect(request.cancel)
+            self._key_checks[field] = request
+
+            def finished(event, message):
+                if self._key_checks.get(field) is not request:
+                    return
+                self._key_checks.pop(field)
+                label.setText("Verified" if event == "response" else message)
+                if event == "response" and field in (self.key, self.groq_key, self.lmstudio_key):
+                    if field is self.groq_key:
+                        self._verified_groq = key
+                    self._prepare_app_list()
+
+            request.outcome.connect(finished)
+            request.start_request({
+                "operation": "check_provider_key", "provider": provider, "key": key,
+                "base_url": self.lmstudio_url.text().strip() if provider == "lmstudio" else "",
+            })
+
+        def flush():
+            catalog_keys = self._catalog_jobs.credentials
+            if field is self.groq_key and catalog_keys and catalog_keys[0] == field.text().strip():
+                if request := self._key_checks.pop(field, None):
+                    request.cancel()
+            elif timer.isActive():
+                check()
+            timer.stop()
+
+        self._flush_key_checks.append(flush)
+        timer.timeout.connect(check)
+        field.textChanged.connect(changed)
+        self.finished.connect(timer.stop)
+        if provider == "lmstudio":
+            self.lmstudio_url.textChanged.connect(changed)
+        if field is self.groq_backup_key:
+            self.remove_groq_backup.toggled.connect(changed)
+        if field is self.nvidia_backup_key:
+            self.remove_nvidia_backup.toggled.connect(changed)
+
+    def _cancel_key_checks(self) -> None:
+        for request in self._key_checks.values():
+            request.cancel()
+        self._key_checks.clear()
 
     def _open_skill_manager(self):
         dlg = SkillManagerDialog(parent=self)
@@ -911,6 +1086,7 @@ class SetupDialog(QDialog):
         if IS_WINDOWS:
             data["launchOnStartup"] = self.startup_checkbox.isChecked()
             data["allowAdminToolRequests"] = self.admin_tools_checkbox.isChecked()
+            data["filterAppsWithGroq"] = self.filter_apps_with_groq.isChecked()
         return data
 
 
@@ -1162,6 +1338,10 @@ def run_setup_dialog(parent=None, show_ready_popup: bool = True) -> bool:
 
 
 def main():
+    if IS_WINDOWS:
+        from zylo_win11 import main as tray_main
+
+        return tray_main()
     set_zylo_app_user_model_id()
     app = QApplication(sys.argv)
     app.setApplicationName("ZYLO")

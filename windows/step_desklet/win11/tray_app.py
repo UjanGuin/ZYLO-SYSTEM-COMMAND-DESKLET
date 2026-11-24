@@ -260,6 +260,8 @@ class ZyloWin11Controller:
         self.focus_monitor.stop()
         if self._settings_window is not None:
             self._settings_window.reject()
+        if jobs := getattr(self.app, "_zylo_app_list_jobs", None):
+            jobs.cancel()
         self.desklet.shutdown()
         self.desklet.close()
         self.desklet.deleteLater()

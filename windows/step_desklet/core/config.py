@@ -257,6 +257,7 @@ def validate_settings_config(raw: Any) -> Dict[str, Any]:
         "memoryTurns": DEFAULT_MEMORY_TURNS if turns is None else turns,
         "launchOnStartup": parse_bool(data.get("launchOnStartup"), False),
         "allowAdminToolRequests": data.get("allowAdminToolRequests") is True,
+        "filterAppsWithGroq": parse_bool(data.get("filterAppsWithGroq"), True),
     }
 
 

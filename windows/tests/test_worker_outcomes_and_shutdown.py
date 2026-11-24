@@ -144,6 +144,28 @@ class ProviderClientTests(unittest.TestCase):
                 )
                 self.assertEqual(wait.call_count, int(expected == "primary"))
 
+    def test_groq_retries_short_tpm_limit_with_less_output_on_same_key(self):
+        client = worker_mod.GroqChatClient("primary", backup_api_key="backup")
+        limited = self._response(429, {"error": {
+            "message": ("Rate limit reached on tokens per minute (TPM): Limit 8000, Used 3209, "
+                        "Requested 6329. Please try again in 11.535s.")
+        }})
+        answer = self._response(200, {"choices": [{"message": {"content": "Recovered."}}]})
+        sent = []
+
+        def post(_url, **kwargs):
+            sent.append((kwargs["headers"]["Authorization"], deepcopy(kwargs["json"])))
+            return limited if len(sent) == 1 else answer
+
+        with (
+            patch.object(client._session, "post", side_effect=post),
+            patch.object(client._cancel_event, "wait", return_value=False) as wait,
+        ):
+            self.assertEqual(client.complete(model=worker_mod.GROQ_MODEL, messages=[]), "Recovered.")
+        wait.assert_called_once_with(12.535)
+        self.assertEqual([key for key, _ in sent], ["Bearer primary", "Bearer primary"])
+        self.assertLess(sent[1][1]["max_completion_tokens"], sent[0][1]["max_completion_tokens"])
+
     def test_groq_uses_the_elapsed_time_for_a_network_timeout(self):
         for elapsed, expected in ((10, "primary"), (18, "backup")):
             with self.subTest(elapsed=elapsed):
@@ -244,6 +266,54 @@ class ProviderClientTests(unittest.TestCase):
 
 
 class WorkerOutcomeAndShutdownTests(unittest.TestCase):
+    def test_exact_windows_volume_runs_trusted_skill_without_a_provider(self):
+        from step_desklet.core.skills import ZyloSkill
+
+        skill = ZyloSkill("media-controls", "Volume", "", Path("media_controls.ps1"), "bundled")
+        client = Mock()
+        worker = worker_mod.StepAIWorker(api_key="", client=client)
+        result = {"status": worker_mod.CMD_STATUS_COMPLETED, "stdout": "Volume set to 70%."}
+        with (
+            patch.object(worker_mod, "IS_WINDOWS", True),
+            patch.object(worker_mod, "discover_skills", return_value={"media-controls": skill}),
+            patch.object(worker, "_execute_skill", return_value=("command", result)) as execute,
+        ):
+            self.assertIn("0 to 100", worker.process_request_sync("Set volume to 101%"))
+            self.assertEqual(worker.process_request_sync("Set volume to 70%"), "Volume set to 70%.")
+            execute.assert_called_once_with(skill, {"Action": "setvolume", "Level": 70}, "Set Windows volume", None)
+            client.complete.assert_not_called()
+
+    def test_four_completed_turns_roll_forward_and_remain_available_during_tools(self):
+        replies = [json.dumps({"mode": "final", "message": f"Reply {number}"}) for number in range(1, 6)]
+        prior_turns = [
+            message
+            for number in range(1, 5)
+            for message in (
+                {"role": "user", "content": f"Message {number}"},
+                {"role": "assistant", "content": f"Reply {number}"},
+            )
+        ]
+        with tempfile.TemporaryDirectory() as directory, patch.object(worker_mod, "discover_skills", return_value={}):
+            conversation = Path(directory) / "conversation.json"
+            options = {"api_key": "", "conversation_path": str(conversation), "max_history_messages": 8}
+            worker = worker_mod.StepAIWorker(client=_FakeClient(replies[:4]), **options)
+            for number in range(1, 5):
+                worker.process_request_sync(f"Message {number}")
+
+            action = json.dumps({"mode": "run", "command": "Get-Date", "reason": "Read the date"})
+            client = _FakeClient([action] * 5 + replies[4:])
+            worker = worker_mod.StepAIWorker(client=client, **options)
+            result = {"status": worker_mod.CMD_STATUS_COMPLETED, "exit_code": 0, "stdout": "Date", "stderr": ""}
+            with patch.object(worker, "_run_command", return_value=result):
+                self.assertEqual(worker.process_request_sync("Message 5"), "Reply 5")
+
+            current = {"role": "user", "content": "Message 5"}
+            for request in client.requests:
+                self.assertEqual(request[1:10], [*prior_turns, current])
+                self.assertLessEqual(len(request), 10 + worker_mod.MAX_TURN_FEEDBACK_MESSAGES)
+            saved = json.loads(conversation.read_text(encoding="utf-8"))
+            self.assertEqual(saved, [*prior_turns[2:], current, {"role": "assistant", "content": "Reply 5"}])
+
     def _make_worker(self, client):
         return worker_mod.StepAIWorker(
             api_key="test",

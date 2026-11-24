@@ -14,7 +14,7 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("ZYLO Desktop Assistant Setup")]
 [assembly: AssemblyProduct("ZYLO Desktop Assistant")]
-[assembly: AssemblyVersion("2.0.0.0")]
+[assembly: AssemblyVersion("2.2.0.0")]
 
 internal sealed class ZyloSetup : Form
 {

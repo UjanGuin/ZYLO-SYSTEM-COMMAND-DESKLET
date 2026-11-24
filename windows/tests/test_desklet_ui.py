@@ -33,6 +33,41 @@ class DeskletUiTests(unittest.TestCase):
         actual = self.desklet.card.height() - self.desklet.input_shell.geometry().bottom() - 1
         self.assertEqual(actual, expected)
 
+    def test_verified_groq_key_starts_background_app_list_and_save_closes_immediately(self):
+        from PyQt6.QtTest import QTest
+        from PyQt6.QtWidgets import QDialog
+        from setup_app import SetupDialog
+        from step_desklet.core.config import read_env_keys
+
+        requests = []
+        dialog = SetupDialog()
+        self.addCleanup(dialog.close)
+        dialog.name.setText("Test profile")
+        dialog.provider_combo.setCurrentIndex(dialog.provider_combo.findData("groq"))
+        with (
+            patch("setup_app.set_windows_startup"),
+            patch("setup_app.QMessageBox.warning", side_effect=AssertionError("Unexpected setup warning")),
+            patch("step_desklet.win11.request_process.DeskletRequest.start_request",
+                  autospec=True, side_effect=lambda process, payload: requests.append((process, payload))),
+        ):
+            dialog.groq_key.setText("test-groq-key")
+            QTest.qWait(550)
+            probe, payload = requests[0]
+            self.assertEqual(payload["operation"], "check_provider_key")
+            self.assertEqual(read_env_keys()["GROQ_API_KEY"], "")
+            probe.outcome.emit("response", "Verified")
+            build, payload = requests[1]
+            self.assertEqual(payload["operation"], "rebuild_app_catalog")
+            self.assertFalse(payload["check_key"])
+            self.assertIs(dialog._catalog_jobs.request, build)
+            dialog.accept()
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            self.assertEqual(read_env_keys()["GROQ_API_KEY"], "test-groq-key")
+            self.assertIs(dialog._catalog_jobs.request, build)
+            self.assertIsNone(dialog._catalog_jobs.draft)
+            self.assertEqual(len(requests), 2)
+            build.outcome.emit("response", "App list rebuilt.")
+
     def test_memory_slider_loads_and_saves_conversation_turns(self):
         from PyQt6.QtCore import Qt
         from PyQt6.QtTest import QTest
