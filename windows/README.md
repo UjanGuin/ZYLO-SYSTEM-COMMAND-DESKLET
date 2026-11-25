@@ -1,10 +1,10 @@
 # ZYLO Desklet for Windows
 
-[Download ZYLO-DESKLET.exe](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/download/windows-v2.2/ZYLO-DESKLET.exe)
+[Download ZYLO-DESKLET.exe](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/download/windows-v2.5/ZYLO-DESKLET.exe)
 
-[Windows v2.2 release notes](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/tag/windows-v2.2)
+[Windows v2.5 release notes](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/tag/windows-v2.5)
 
-Windows v2.2 packages ZYLO 2.2.0 for Windows 11 x64. ZYLO is a desktop panel for asking questions and running everyday PowerShell tasks.
+Windows v2.5 packages ZYLO 2.5.0 for Windows 11 x64. ZYLO is a desktop panel for asking questions and running everyday PowerShell tasks.
 
 ## Install or upgrade
 
@@ -19,11 +19,11 @@ Windows v2.2 packages ZYLO 2.2.0 for Windows 11 x64. ZYLO is a desktop panel for
 | Groq | Enter a Groq API key for hosted completions. |
 | LM Studio | Start LM Studio's local server and set its base URL and model. The default endpoint is `http://127.0.0.1:1234/v1`. |
 
-Add optional backup keys for NVIDIA and Groq. NVIDIA switches on a rate limit or request timeout. Groq retries on the active key for waits under 16 seconds and tries the backup for longer waits. NVIDIA retries HTTP 502 once on the current key. Groq retries rejected JSON generation once. Each prompt starts with its primary key.
+Add optional backup keys for NVIDIA and Groq. NVIDIA switches on a rate limit or request timeout. Groq retries on the active key for waits under 4 seconds and tries the backup for longer waits. NVIDIA retries HTTP 502 once on the current key. Groq retries rejected JSON generation once. Each prompt starts with its primary key.
 
 A Tavily key is optional for web search. A blank API key field keeps the saved value. ZYLO stores settings and credentials locally under `%APPDATA%\ZYLO`. Keep the `step-desklet.env` file private.
 
-## ZYLO for Windows v2.2
+## ZYLO for Windows v2.5
 
 - Settings save immediately. Pasted keys receive a background validation check, and a verified Groq key starts the app-list build when app filtering is enabled.
 - Exact Windows output volume commands are supported, including phrased requests such as "Set volume to 70%".
@@ -68,3 +68,9 @@ The Windows x64 installer passed a smoke test and all 42 automated tests. Provid
 ## License
 
 [MIT](../LICENSE)
+
+## FreeLLMAPI and provider visibility
+
+Start FreeLLMAPI on this PC. In **Setup → Providers**, enable FreeLLMAPI, paste its unified API key, and choose Auto or Fast. ZYLO connects to `http://127.0.0.1:31415/v1`. Use the separate switches to hide LM Studio or FreeLLMAPI from the desklet and tray. NVIDIA NIM and Groq always remain available.
+
+Search depth is configurable per Windows folder under **Setup → System → File search depth**. Enter 0 for Unlimited. Videos defaults to level 6.

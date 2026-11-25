@@ -12,9 +12,26 @@ from typing import Any, Dict, Optional
 IS_WINDOWS = sys.platform == "win32"
 
 DEFAULT_LMSTUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
+FREELLMAPI_BASE_URL = "http://127.0.0.1:31415/v1"
+FREELLMAPI_ROUTES = {"auto": "Auto", "auto:fast": "Fast"}
+PROVIDER_LABELS = {
+    "nim": "NVIDIA NIM",
+    "groq": "Groq",
+    "lmstudio": "LM Studio",
+    "freellmapi": "FreeLLMAPI",
+}
 DEFAULT_MEMORY_TURNS = 12
 MIN_MEMORY_TURNS = 4
 MAX_MEMORY_TURNS = 30
+DEFAULT_FILE_SEARCH_LEVELS = {
+    "desktop": 7,
+    "documents": 7,
+    "downloads": 7,
+    "pictures": 6,
+    "music": 6,
+    "videos": 6,
+}
+MAX_FILE_SEARCH_LEVEL_INPUT = 2_147_483_647
 
 DEFAULT_DESKLET_X = 72
 DEFAULT_DESKLET_Y = 96
@@ -221,12 +238,23 @@ def load_layout_config() -> Dict[str, Any]:
     return validate_layout_config(read_json_file(get_layout_file()))
 
 
+def validate_file_search_levels(raw: Any) -> Dict[str, int]:
+    """Use 0 for unlimited. Invalid or missing settings keep the folder default."""
+    data = raw if isinstance(raw, dict) else {}
+    levels = DEFAULT_FILE_SEARCH_LEVELS.copy()
+    for folder in levels:
+        value = data.get(folder)
+        if type(value) is int and 0 <= value <= MAX_FILE_SEARCH_LEVEL_INPUT:
+            levels[folder] = value
+    return levels
+
+
 def validate_settings_config(raw: Any) -> Dict[str, Any]:
     """Normalize settings.json fields with safe defaults and bounds."""
     data = raw if isinstance(raw, dict) else {}
     accent_cfg = get_accent_config(data)
     provider = str(data.get("defaultProvider") or "").strip().lower()
-    if provider not in {"nim", "groq", "lmstudio"}:
+    if provider not in enabled_providers(data):
         provider = ""
     raw_name = data.get("name")
     name = str(raw_name).strip()[:80] if isinstance(raw_name, str) else ""
@@ -254,10 +282,14 @@ def validate_settings_config(raw: Any) -> Dict[str, Any]:
         "defaultProvider": provider,
         "lmstudioBaseUrl": lms_url,
         "lmstudioModel": lms_model,
+        "lmstudioEnabled": parse_bool(data.get("lmstudioEnabled"), True),
+        "freeLlmApiEnabled": parse_bool(data.get("freeLlmApiEnabled"), False),
+        "freeLlmApiModel": normalize_freellmapi_route(data.get("freeLlmApiModel")),
         "memoryTurns": DEFAULT_MEMORY_TURNS if turns is None else turns,
         "launchOnStartup": parse_bool(data.get("launchOnStartup"), False),
         "allowAdminToolRequests": data.get("allowAdminToolRequests") is True,
         "filterAppsWithGroq": parse_bool(data.get("filterAppsWithGroq"), True),
+        "fileSearchLevels": validate_file_search_levels(data.get("fileSearchLevels")),
     }
 
 
@@ -265,23 +297,37 @@ def load_settings_config() -> Dict[str, Any]:
     return validate_settings_config(read_json_file(get_settings_file()))
 
 
-def read_provider() -> str:
+def normalize_freellmapi_route(value: Any) -> str:
+    return value if isinstance(value, str) and value in FREELLMAPI_ROUTES else "auto"
+
+
+def enabled_providers(settings: Dict[str, Any]) -> list[str]:
+    providers = ["nim", "groq"]
+    if not IS_WINDOWS or parse_bool(settings.get("lmstudioEnabled"), True):
+        providers.append("lmstudio")
+    if IS_WINDOWS and parse_bool(settings.get("freeLlmApiEnabled"), False):
+        providers.append("freellmapi")
+    return providers
+
+
+def read_provider(settings: Dict[str, Any] | None = None) -> str:
+    settings = load_settings_config() if settings is None else settings
+    allowed = enabled_providers(settings)
     try:
         value = get_model_file().read_text(encoding="utf-8").strip().lower()
-        if value in {"nim", "groq", "lmstudio"}:
+        if value in allowed:
             return value
     except OSError:
         pass
-    settings = read_json_file(get_settings_file())
-    default_provider = str(settings.get("defaultProvider", "")).strip().lower()
-    if default_provider in {"nim", "groq", "lmstudio"}:
+    default_provider = settings.get("defaultProvider")
+    if default_provider in allowed:
         return default_provider
     return "nim"
 
 
 def write_provider(provider: str) -> None:
     ensure_config_dir()
-    normalized = provider if provider in {"nim", "groq", "lmstudio"} else "nim"
+    normalized = provider if provider in enabled_providers(load_settings_config()) else "nim"
     get_model_file().write_text(normalized, encoding="utf-8")
 
 
@@ -305,6 +351,7 @@ def read_env_keys() -> Dict[str, str]:
         "LMSTUDIO_BASE_URL": "",
         "LMSTUDIO_MODEL": "",
         "LMSTUDIO_API_KEY": "",
+        "FREELLMAPI_API_KEY": "",
     }
     env_file = get_env_file()
     if not env_file.exists():
@@ -336,6 +383,7 @@ def write_env_keys(
     *,
     nvidia_backup_key: str | None = None,
     groq_backup_key: str | None = None,
+    freellmapi_api_key: str | None = None,
 ) -> None:
     ensure_config_dir()
     env_file = get_env_file()
@@ -358,6 +406,8 @@ def write_env_keys(
         updates["NVIDIA_BACKUP_API_KEY"] = nvidia_backup_key.strip()
     if groq_backup_key is not None:
         updates["GROQ_BACKUP_API_KEY"] = groq_backup_key.strip()
+    if freellmapi_api_key is not None:
+        updates["FREELLMAPI_API_KEY"] = freellmapi_api_key.strip()
 
     out_lines = []
     seen = set()

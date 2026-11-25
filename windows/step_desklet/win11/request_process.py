@@ -64,6 +64,7 @@ class DeskletRequest(QProcess):
         self._launcher = None
         self._cancelled = False
         self._result = ("error", "The request process ended without a result.")
+        self.file_matches: tuple[str, ...] = ()
         self.readyReadStandardOutput.connect(self._receive_output)
         self.errorOccurred.connect(self._on_error)
         self.finished.connect(self._on_finished)
@@ -108,6 +109,8 @@ class DeskletRequest(QProcess):
                 self._start_launch(value)
             elif event == "status":
                 self.status.emit(value)
+            elif event == "file_matches":
+                self.file_matches = tuple(value)
             elif event in ("response", "error", "cancelled", "admin_tool"):
                 self._result = (event, value)
 
@@ -121,7 +124,7 @@ class DeskletRequest(QProcess):
         environment = QProcessEnvironment.systemEnvironment()
         for name in (
             "GROQ_API_KEY", "GROQ_BACKUP_API_KEY", "NVIDIA_API_KEY", "NVIDIA_BACKUP_API_KEY",
-            "NIM_API_KEY", "LMSTUDIO_API_KEY", "TAVILY_API_KEY",
+            "NIM_API_KEY", "LMSTUDIO_API_KEY", "TAVILY_API_KEY", "FREELLMAPI_API_KEY",
         ):
             environment.remove(name)
         launcher.setProcessEnvironment(environment)
@@ -191,8 +194,9 @@ def run_launch_worker() -> int:
     return 0
 
 
-def check_provider_key(provider: str, key: str, base_url: str = "") -> None:
+def check_provider_key(provider: str, key: str, base_url: str = "", model: str = "") -> None:
     import requests
+    from step_desklet.core.config import FREELLMAPI_BASE_URL, normalize_freellmapi_route
     from step_desklet.core.worker import (
         DEFAULT_NIM_API_URL, DEFAULT_NIM_MODEL, GROQ_API_URL, GROQ_MODEL, PREVIOUS_NIM_DEFAULT,
         normalize_lmstudio_base_url,
@@ -208,6 +212,18 @@ def check_provider_key(provider: str, key: str, base_url: str = "") -> None:
             request = requests.get("https://api.tavily.com/usage", **options)
         elif provider == "lmstudio":
             request = requests.get(normalize_lmstudio_base_url(base_url) + "/models", **options)
+        elif provider == "freellmapi":
+            with requests.Session() as session:
+                session.trust_env = False
+                options["timeout"] = (4, 30)
+                request = session.post(
+                    f"{FREELLMAPI_BASE_URL}/chat/completions",
+                    json={
+                        "model": normalize_freellmapi_route(model),
+                        "messages": [{"role": "user", "content": "Reply with OK."}],
+                    },
+                    **options,
+                )
         elif provider in {"nim", "groq"}:
             nim_model = os.getenv("NIM_MODEL", "").strip()
             model = nim_model if nim_model and nim_model != PREVIOUS_NIM_DEFAULT else DEFAULT_NIM_MODEL
@@ -237,7 +253,7 @@ def check_provider_key(provider: str, key: str, base_url: str = "") -> None:
             data = response.json()
             if not isinstance(data, dict) or "error" in data:
                 raise RuntimeError("Unexpected provider response")
-            if provider in {"nim", "groq"} and not data.get("choices"):
+            if provider in {"nim", "groq", "freellmapi"} and not data.get("choices"):
                 raise RuntimeError("No model response")
             if provider == "lmstudio" and not isinstance(data.get("data"), list):
                 raise RuntimeError("Unexpected provider response")
@@ -248,12 +264,13 @@ def check_provider_key(provider: str, key: str, base_url: str = "") -> None:
 
 def run_request_worker() -> int:
     """Read one request from the application's private pipe and send its events back."""
-    from step_desklet.core.config import read_env_keys
+    from step_desklet.core.config import enabled_providers, load_settings_config, normalize_freellmapi_route, read_env_keys
     from step_desklet.core.worker import (
         DEFAULT_NIM_API_URL,
         DEFAULT_NIM_MODEL,
         GROQ_MODEL,
         PREVIOUS_NIM_DEFAULT,
+        FreeLLMAPIChatClient,
         GroqChatClient,
         LMStudioChatClient,
         NIMChatClient,
@@ -280,7 +297,7 @@ def run_request_worker() -> int:
     try:
         request = json.loads(line)
         if request.get("operation") == "check_provider_key":
-            check_provider_key(request["provider"], request["key"], request.get("base_url", ""))
+            check_provider_key(request["provider"], request["key"], request.get("base_url", ""), request.get("model", ""))
             send("response", "Verified")
             return 0
         if request.get("operation") == "rebuild_app_catalog":
@@ -302,6 +319,10 @@ def run_request_worker() -> int:
             return 0
         options = request["options"]
         saved_keys = read_env_keys()
+        settings = load_settings_config()
+        if request["provider"] not in enabled_providers(settings):
+            send("error", "This provider is disabled. Select an enabled provider or turn it on in Setup.")
+            return 0
         if request["provider"] == "groq":
             client = GroqChatClient(
                 os.getenv("GROQ_API_KEY") or "",
@@ -313,6 +334,10 @@ def run_request_worker() -> int:
             client = LMStudioChatClient(
                 base_url=request["base_url"], model=model, api_key=os.getenv("LMSTUDIO_API_KEY") or ""
             )
+            worker = StepAIWorker(api_key="", model=model, client=client, **options)
+        elif request["provider"] == "freellmapi":
+            model = normalize_freellmapi_route(settings["freeLlmApiModel"])
+            client = FreeLLMAPIChatClient(saved_keys["FREELLMAPI_API_KEY"], model=model)
             worker = StepAIWorker(api_key="", model=model, client=client, **options)
         else:
             model = os.getenv("NIM_MODEL", "").strip()
@@ -328,8 +353,14 @@ def run_request_worker() -> int:
                 **options,
             )
         worker.launch_item = launch_item
+        worker.pending_file_matches = tuple(request.get("file_matches", ()))
+
+        def respond(text: str) -> None:
+            send("file_matches", worker.pending_file_matches)
+            send("response", text)
+
         worker.signals.status_update.connect(lambda text: send("status", text))
-        worker.signals.response_ready.connect(lambda text: send("response", text))
+        worker.signals.response_ready.connect(respond)
         worker.signals.admin_tool_requested.connect(lambda tool_id: send("admin_tool", tool_id))
         worker.signals.error_occurred.connect(lambda text: send("error", text))
         worker.signals.cancelled.connect(lambda: send("cancelled", ""))

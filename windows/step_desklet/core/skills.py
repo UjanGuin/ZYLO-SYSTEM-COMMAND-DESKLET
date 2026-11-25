@@ -26,6 +26,15 @@ SKILL_ID_RE = re.compile(r"[^a-z0-9_-]+")
 PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MAX_SKILL_HISTORY_ENTRIES = 200
 _SUPERSEDED_BUNDLED_SKILLS = {
+    "find_file.ps1": {
+        "c3cecb29eaeb5a6941c45d1e43398f87d9c62d431f81c5ce6b381912b923ff5e",
+        "e4209a85bc5eee35780bc0d10594209a533a452afd9b159f1968be45ab9bf134",
+        "93ba5405af5e4de17f1f824964df1a2f4503069c20b15fc95094b4beb4a7728c",
+        "b68786568f5a32a042a9b2f653297e0f8ee6f8ed9745ba63b4227c8270cb0671",
+        "ca846edc36271045636fa7459dd9ee4c248a884e5f99fa035481653a6fb202a8",
+        "4c7700eb7595cbd29b91127cc6d455d84b843bde01f7ee02233f8c707e49da70",
+        "22280a8ccf7344e315354267ca7b2dc4b178d9e1129cd21f27e0331b856ab336",
+    },
     "media_controls.ps1": {"7df7a93b2bb26382fc2cdd83a7f1262ae52278282b36697889775a347f980c31"},
     "installed_apps.ps1": {
         "8b4ee1f812b9de924e1565d7e1ac2dcdcfd79b89d6a0da6d4c12de338ab199ff",

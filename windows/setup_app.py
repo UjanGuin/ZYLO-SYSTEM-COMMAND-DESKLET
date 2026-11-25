@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QSpinBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -42,11 +43,17 @@ from PyQt6.QtWidgets import (
 
 from step_desklet.core.config import (
     ACCENTS,
+    DEFAULT_FILE_SEARCH_LEVELS,
     DEFAULT_LMSTUDIO_BASE_URL,
+    FREELLMAPI_BASE_URL,
+    FREELLMAPI_ROUTES,
     GRADIENT_PRESETS,
     IS_WINDOWS,
+    MAX_FILE_SEARCH_LEVEL_INPUT,
     MAX_MEMORY_TURNS,
     MIN_MEMORY_TURNS,
+    PROVIDER_LABELS,
+    enabled_providers,
     ensure_config_dir,
     get_accent_config,
     get_memory_turns,
@@ -89,6 +96,7 @@ SETTINGS_STYLE = """
     QLabel#StudioBrand { color: #f6f0ff; font-size: 19px; font-weight: 750; }
     QLabel#StudioTitle { color: #f7f3ff; font-size: 33px; font-weight: 650; }
     QLabel#StudioCardTitle { color: #f2efff; font-size: 17px; font-weight: 650; }
+    QLabel#StudioInfoIcon { color: #baa9ff; font-size: 15px; }
     QFrame#StudioSidebar { background: #191a26; border-right: 1px solid #2d3042; }
     QFrame#StudioFooter { background: #161822; border-top: 1px solid #2d3042; }
     QFrame#StudioCard { background: #1b1e2b; border: 1px solid #303447; border-radius: 14px; }
@@ -99,11 +107,11 @@ SETTINGS_STYLE = """
     QScrollBar::handle:vertical { background: #464963; border-radius: 4px; min-height: 24px; }
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-    QLineEdit, QComboBox {
+    QLineEdit, QComboBox, QSpinBox {
         color: #f5f4fe; background: #141621; border: 1px solid #393d53;
         border-radius: 8px; padding: 8px 10px; min-height: 18px;
     }
-    QLineEdit:focus, QComboBox:focus { border-color: #ad9afa; }
+    QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #ad9afa; }
     QLineEdit:disabled, QComboBox:disabled { color: #8089a0; }
     QComboBox::drop-down { border: none; width: 24px; }
     QComboBox::down-arrow { image: none; }
@@ -326,13 +334,13 @@ class SetupDialog(QDialog):
         self.name.setPlaceholderText("What should ZYLO call you?")
 
         self.provider_combo = SettingsComboBox()
-        self.provider_combo.addItem("NVIDIA NIM · Nemotron 3.5 Super", "nim")
-        self.provider_combo.addItem("Groq · GPT-OSS 120B", "groq")
-        self.provider_combo.addItem("LM Studio · Local server", "lmstudio")
-        active_provider = current.get("defaultProvider") or read_provider()
-        idx = self.provider_combo.findData(active_provider)
-        if idx >= 0:
-            self.provider_combo.setCurrentIndex(idx)
+        self.lmstudio_enabled = QCheckBox("Show LM Studio in the provider switcher")
+        self.lmstudio_enabled.setChecked(current["lmstudioEnabled"])
+        self.freellmapi_enabled = QCheckBox("Show FreeLLMAPI in the provider switcher")
+        self.freellmapi_enabled.setChecked(current["freeLlmApiEnabled"])
+        self._refresh_provider_choices(current.get("defaultProvider") or read_provider(current))
+        self.lmstudio_enabled.toggled.connect(lambda: self._refresh_provider_choices())
+        self.freellmapi_enabled.toggled.connect(lambda: self._refresh_provider_choices())
 
         # LM Studio configuration fields
         self.lmstudio_url = QLineEdit(
@@ -463,6 +471,8 @@ class SetupDialog(QDialog):
             ))
 
         local = self._studio_form()
+        if IS_WINDOWS:
+            local.addRow(self.lmstudio_enabled)
         lms_url_row = QHBoxLayout()
         lms_url_row.setSpacing(8)
         lms_url_row.addWidget(self.lmstudio_url, 1)
@@ -493,6 +503,21 @@ class SetupDialog(QDialog):
             self._studio_card("LM Studio", local),
             self._studio_card("Tavily web search", search),
         ]
+        if IS_WINDOWS:
+            free = self._studio_form()
+            free.addRow(self.freellmapi_enabled)
+            self.freellmapi_key, free_key_row = self._credential_row(saved_env["FREELLMAPI_API_KEY"])
+            self.freellmapi_key.setAccessibleName("FreeLLMAPI unified key")
+            free.addRow("Unified API key", free_key_row)
+            self.freellmapi_model = SettingsComboBox()
+            for model, label in FREELLMAPI_ROUTES.items():
+                self.freellmapi_model.addItem(label, model)
+            self.freellmapi_model.setCurrentIndex(self.freellmapi_model.findData(current["freeLlmApiModel"]))
+            free.addRow("Routing", self.freellmapi_model)
+            free.addRow("Local endpoint", self._muted(FREELLMAPI_BASE_URL))
+            provider_cards.insert(-1, self._studio_card(
+                "FreeLLMAPI", free, "Start FreeLLMAPI on this PC and paste its unified API key.",
+            ))
 
         self._theme_form = self._studio_form()
         self._theme_form.addRow("Color style", self.accent_mode_combo)
@@ -544,6 +569,25 @@ class SetupDialog(QDialog):
         system_cards = [self._studio_card("PowerShell skills" if IS_WINDOWS else "Skills", skills)]
         if IS_WINDOWS:
             system_cards.insert(0, self._studio_card("Startup and permissions", system))
+            search_depth = self._studio_form()
+            self.file_search_depths = {}
+            for folder in DEFAULT_FILE_SEARCH_LEVELS:
+                level = QSpinBox()
+                level.setRange(0, MAX_FILE_SEARCH_LEVEL_INPUT)
+                level.setSpecialValueText("Unlimited")
+                level.setValue(current["fileSearchLevels"][folder])
+                level.setMaximumWidth(140)
+                level.setAccessibleName(f"{folder.title()} file search level")
+                self.file_search_depths[folder] = level
+                search_depth.addRow(folder.title(), level)
+            system_cards.append(self._studio_card(
+                "File search depth", search_depth, "Set the last folder level to search in each location.",
+                help_text=(
+                    "The drive root is level 1. Each folder adds one level.\n"
+                    "Files inside the last allowed folder are included.\n"
+                    "Enter 0 to search all subfolders in a location."
+                ),
+            ))
             catalog_box = QVBoxLayout()
             self.filter_apps_with_groq = QCheckBox("Use Groq to filter the app list")
             self.filter_apps_with_groq.setChecked(current["filterAppsWithGroq"])
@@ -563,6 +607,7 @@ class SetupDialog(QDialog):
                 (self.groq_backup_key, groq_backup_row, "groq"),
                 (self.tavily_key, tavily_row, "tavily"),
                 (self.lmstudio_key, lms_key_row, "lmstudio"),
+                (self.freellmapi_key, free_key_row, "freellmapi"),
             ):
                 self._watch_key(field, row.itemAt(1).widget(), provider)
             catalog_box.addWidget(self.filter_apps_with_groq)
@@ -579,7 +624,7 @@ class SetupDialog(QDialog):
                 ("General", "Set your profile, preferred model provider, and conversation memory.", general_cards),
                 ("Providers", "Manage model connections. Leave any saved key field blank to keep it.", provider_cards),
                 ("Appearance", "Tune the colors and glow of your desklet.", [self._studio_card("Desklet theme", appearance)]),
-                ("System", "Manage startup, Windows tools, skills, and the installed app list.", system_cards),
+                ("System", "Manage startup, Windows tools, skills, and file search.", system_cards),
             ),
             show_desklet,
         )
@@ -591,6 +636,18 @@ class SetupDialog(QDialog):
         super().showEvent(event)
         if IS_WINDOWS:
             use_dark_title_bar(int(self.winId()))
+
+    def _refresh_provider_choices(self, preferred=None) -> None:
+        current = preferred or self.provider_combo.currentData()
+        providers = enabled_providers({
+            "lmstudioEnabled": self.lmstudio_enabled.isChecked(),
+            "freeLlmApiEnabled": self.freellmapi_enabled.isChecked(),
+        })
+        self.provider_combo.clear()
+        for provider in providers:
+            self.provider_combo.addItem(PROVIDER_LABELS[provider], provider)
+        index = self.provider_combo.findData(current)
+        self.provider_combo.setCurrentIndex(max(0, index))
 
     @staticmethod
     def _muted(text: str) -> QLabel:
@@ -614,7 +671,7 @@ class SetupDialog(QDialog):
         form.setVerticalSpacing(10)
         return form
 
-    def _studio_card(self, title: str, content, description: str = "") -> QFrame:
+    def _studio_card(self, title: str, content, description: str = "", *, help_text: str = "") -> QFrame:
         card = QFrame()
         card.setObjectName("StudioCard")
         layout = QVBoxLayout(card)
@@ -622,7 +679,19 @@ class SetupDialog(QDialog):
         layout.setSpacing(12)
         heading = QLabel(title)
         heading.setObjectName("StudioCardTitle")
-        layout.addWidget(heading)
+        if help_text:
+            help_icon = QLabel("ⓘ")
+            help_icon.setObjectName("StudioInfoIcon")
+            help_icon.setAccessibleName(f"About {title.lower()}")
+            help_icon.setAccessibleDescription(help_text)
+            help_icon.setToolTip(help_text)
+            header = QHBoxLayout()
+            header.addWidget(heading)
+            header.addWidget(help_icon)
+            header.addStretch()
+            layout.addLayout(header)
+        else:
+            layout.addWidget(heading)
         if description:
             layout.addWidget(self._muted(description))
         layout.addLayout(content)
@@ -868,6 +937,7 @@ class SetupDialog(QDialog):
             request.start_request({
                 "operation": "check_provider_key", "provider": provider, "key": key,
                 "base_url": self.lmstudio_url.text().strip() if provider == "lmstudio" else "",
+                "model": self.freellmapi_model.currentData() if provider == "freellmapi" else "",
             })
 
         def flush():
@@ -885,6 +955,8 @@ class SetupDialog(QDialog):
         self.finished.connect(timer.stop)
         if provider == "lmstudio":
             self.lmstudio_url.textChanged.connect(changed)
+        if provider == "freellmapi":
+            self.freellmapi_model.currentIndexChanged.connect(changed)
         if field is self.groq_backup_key:
             self.remove_groq_backup.toggled.connect(changed)
         if field is self.nvidia_backup_key:
@@ -1085,8 +1157,14 @@ class SetupDialog(QDialog):
         }
         if IS_WINDOWS:
             data["launchOnStartup"] = self.startup_checkbox.isChecked()
+            data["lmstudioEnabled"] = self.lmstudio_enabled.isChecked()
+            data["freeLlmApiEnabled"] = self.freellmapi_enabled.isChecked()
+            data["freeLlmApiModel"] = self.freellmapi_model.currentData()
             data["allowAdminToolRequests"] = self.admin_tools_checkbox.isChecked()
             data["filterAppsWithGroq"] = self.filter_apps_with_groq.isChecked()
+            data["fileSearchLevels"] = {
+                folder: level.value() for folder, level in self.file_search_depths.items()
+            }
         return data
 
 
@@ -1274,13 +1352,14 @@ def save_setup(dialog: SetupDialog) -> bool:
     groq_key = dialog.groq_key.text().strip() or previous["GROQ_API_KEY"]
     tavily_key = dialog.tavily_key.text().strip() or previous["TAVILY_API_KEY"]
     lms_key = dialog.lmstudio_key.text().strip() or previous["LMSTUDIO_API_KEY"]
+    free_key = (dialog.freellmapi_key.text().strip() or previous["FREELLMAPI_API_KEY"]) if IS_WINDOWS else None
     provider = values["defaultProvider"]
 
     if provider == "nim" and not api_key:
         QMessageBox.warning(
             dialog,
             "NVIDIA API key required",
-            "Enter an NVIDIA key, or switch Default provider to Groq or LM Studio.",
+            "Enter an NVIDIA key, or select another configured default provider.",
         )
         dialog._select_section("Providers", dialog.key)
         return False
@@ -1288,9 +1367,13 @@ def save_setup(dialog: SetupDialog) -> bool:
         QMessageBox.warning(
             dialog,
             "Groq API key required",
-            "Enter a Groq key, or switch Default provider to NVIDIA NIM or LM Studio.",
+            "Enter a Groq key, or select another configured default provider.",
         )
         dialog._select_section("Providers", dialog.groq_key)
+        return False
+    if provider == "freellmapi" and not free_key:
+        QMessageBox.warning(dialog, "Unified key required", "Enter the unified API key from FreeLLMAPI.")
+        dialog._select_section("Providers", dialog.freellmapi_key)
         return False
 
     try:
@@ -1304,6 +1387,7 @@ def save_setup(dialog: SetupDialog) -> bool:
             lmstudio_base_url=values["lmstudioBaseUrl"],
             lmstudio_model=values["lmstudioModel"],
             lmstudio_api_key=lms_key,
+            freellmapi_api_key=free_key,
             nvidia_backup_key=(
                 "" if dialog.remove_nvidia_backup.isChecked()
                 else dialog.nvidia_backup_key.text().strip() or previous["NVIDIA_BACKUP_API_KEY"]

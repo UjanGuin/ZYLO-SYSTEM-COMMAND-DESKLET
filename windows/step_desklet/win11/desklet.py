@@ -43,6 +43,8 @@ from step_desklet.core.config import (
     MAX_DESKLET_WIDTH,
     MIN_DESKLET_HEIGHT,
     MIN_DESKLET_WIDTH,
+    PROVIDER_LABELS,
+    enabled_providers,
     get_accent_config,
     get_conversation_file,
     get_env_file,
@@ -224,7 +226,7 @@ class ZyloDeskletWindow(QWidget):
 
         self._settings = load_settings_config()
         self._layout_data = load_layout_config()
-        self._provider = read_provider()
+        self._provider = read_provider(self._settings)
         self._locked = bool(self._layout_data["locked"])
         self._interacting = False
         self._drag_mode: Optional[str] = None
@@ -235,6 +237,7 @@ class ZyloDeskletWindow(QWidget):
         self._anchor_pos = QPoint(self._layout_data["x"], self._layout_data["y"])
 
         self._request: Optional[DeskletRequest] = None
+        self._file_matches: tuple[str, ...] = ()
         self._admin_prompt: Optional[QMessageBox] = None
         self._busy = False
         self._shutting_down = False
@@ -305,10 +308,9 @@ class ZyloDeskletWindow(QWidget):
         self.clear_btn.clicked.connect(self.clear_all)
         actions.addWidget(self.clear_btn)
 
-        provider_badge = {"groq": "G", "lmstudio": "L"}.get(self._provider, "N")
-        self.model_btn = QPushButton(provider_badge, self.card)
+        self.model_btn = QPushButton(self.card)
         self.model_btn.setObjectName("ZyloProviderButton")
-        self.model_btn.setToolTip("Switch AI provider (NVIDIA NIM / Groq / LM Studio)")
+        self._update_provider_button()
         self.model_btn.setFixedSize(28, 26)
         self.model_btn.clicked.connect(self.toggle_provider)
         actions.addWidget(self.model_btn)
@@ -584,8 +586,8 @@ class ZyloDeskletWindow(QWidget):
 
     def reload_settings(self) -> None:
         self._settings = load_settings_config()
-        self._provider = read_provider()
-        self.model_btn.setText({"groq": "G", "lmstudio": "L"}.get(self._provider, "N"))
+        self._provider = read_provider(self._settings)
+        self._update_provider_button()
         self.title_label.setText(self._settings.get("name") or "ZYLO")
         self.apply_theme()
         self._fit_height()
@@ -632,18 +634,31 @@ class ZyloDeskletWindow(QWidget):
         self._save_layout()
         self.lock_changed.emit(self._locked)
 
+    def next_provider(self) -> str:
+        order = enabled_providers(self._settings)
+        if self._provider not in order:
+            return order[0]
+        return order[(order.index(self._provider) + 1) % len(order)]
+
+    def _update_provider_button(self) -> None:
+        self.model_btn.setText({"nim": "N", "groq": "G", "lmstudio": "L", "freellmapi": "F"}[self._provider])
+        label = f"Switch AI provider. Current: {PROVIDER_LABELS[self._provider]}."
+        self.model_btn.setToolTip(label)
+        self.model_btn.setAccessibleName(label)
+
     def toggle_provider(self) -> None:
         self._provider_status_timer.stop()
-        order = ["nim", "groq", "lmstudio"]
-        idx = order.index(self._provider) if self._provider in order else 0
-        self._provider = order[(idx + 1) % len(order)]
-        self.model_btn.setText({"groq": "G", "lmstudio": "L"}.get(self._provider, "N"))
+        self._provider = self.next_provider()
+        self._update_provider_button()
         write_provider(self._provider)
         if self._provider == "groq":
             label = "Groq · GPT OSS 120B selected"
         elif self._provider == "lmstudio":
             lms_model = self._settings.get("lmstudioModel") or "auto-loaded model"
             label = f"LM Studio · {lms_model} selected"
+        elif self._provider == "freellmapi":
+            route = "Fast" if self._settings["freeLlmApiModel"] == "auto:fast" else "Auto"
+            label = f"FreeLLMAPI · {route} selected"
         else:
             label = "NVIDIA · Nemotron 3.5 Super selected"
         self.status_label.setText(label)
@@ -669,6 +684,7 @@ class ZyloDeskletWindow(QWidget):
         self._fit_height()
 
     def _cancel_request(self) -> None:
+        self._file_matches = ()
         request, self._request = self._request, None
         if request is not None:
             request.cancel()
@@ -698,7 +714,9 @@ class ZyloDeskletWindow(QWidget):
         if env_path.exists():
             os.environ.update({
                 key: value for key, value in dotenv_values(env_path).items()
-                if value is not None and key not in {"NVIDIA_BACKUP_API_KEY", "GROQ_BACKUP_API_KEY"}
+                if value is not None and key not in {
+                    "NVIDIA_BACKUP_API_KEY", "GROQ_BACKUP_API_KEY", "FREELLMAPI_API_KEY",
+                }
             })
 
         self._set_busy(True)
@@ -724,8 +742,10 @@ class ZyloDeskletWindow(QWidget):
         self._request = request
         request.status.connect(self._on_worker_status)
         request.outcome.connect(self._on_request_outcome)
+        file_matches, self._file_matches = self._file_matches, ()
         request.start_request({
             "prompt": prompt,
+            "file_matches": file_matches,
             "provider": self._provider,
             "options": worker_options,
             "base_url": (
@@ -737,10 +757,11 @@ class ZyloDeskletWindow(QWidget):
         })
 
     def _on_request_outcome(self, event: str, value: str) -> None:
-        if self.sender() is not self._request:
+        if self._request is None or self.sender() is not self._request:
             return
-        self._request = None
+        request, self._request = self._request, None
         if event == "response":
+            self._file_matches = request.file_matches
             self._on_worker_response(value)
         elif event == "admin_tool":
             self._on_admin_tool_requested(value)
@@ -769,7 +790,8 @@ class ZyloDeskletWindow(QWidget):
 
         word_count = len(text.strip().split())
         delay_ms = max(6000, min(120000, 3500 + word_count * 220))
-        self._autoclear_timer.start(delay_ms)
+        if not self._file_matches:
+            self._autoclear_timer.start(delay_ms)
         self.prompt_input.setFocus()
 
     def _on_admin_tool_requested(self, tool_id: str) -> None:

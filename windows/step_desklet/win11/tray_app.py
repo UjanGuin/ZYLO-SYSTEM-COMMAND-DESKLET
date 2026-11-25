@@ -5,6 +5,7 @@ from PyQt6.QtGui import QAction, QColor, QDesktopServices, QIcon, QLinearGradien
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QSystemTrayIcon
 
 from step_desklet.core.config import (
+    PROVIDER_LABELS,
     get_accent_config,
     get_env_file,
     get_settings_file,
@@ -141,8 +142,7 @@ class ZyloWin11Controller:
         self.tray.show()
 
     def _sync_menu_labels(self, *_args) -> None:
-        next_map = {"nim": "Groq", "groq": "LM Studio", "lmstudio": "NVIDIA NIM"}
-        next_label = next_map.get(self.desklet._provider, "Groq")
+        next_label = PROVIDER_LABELS[self.desklet.next_provider()]
         self.provider_action.setText(f"Switch Provider → {next_label}")
         self.lock_action.setText("Unlock Panel Position" if self.desklet._locked else "Lock Panel Position")
 

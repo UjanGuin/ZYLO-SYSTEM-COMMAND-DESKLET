@@ -1,0 +1,54 @@
+name: Publish Windows v2.5
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-windows-v2.5.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-v2.5-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and verify Windows installer
+        shell: pwsh
+        run: |
+          ./windows/packaging/Build-WindowsInstaller.ps1
+          $installer = (Resolve-Path ./windows/dist/ZYLO-DESKLET.exe).Path
+          $version = [System.Reflection.AssemblyName]::GetAssemblyName($installer).Version.ToString()
+          if ($version -ne '2.5.0.0') { throw "Unexpected assembly version: $version" }
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath ./windows/dist/SHA256SUMS.txt -Encoding ascii -Value "$hash  ZYLO-DESKLET.exe"
+      - name: Publish Windows release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'windows-v2.5'
+          gh release create $tag ./windows/dist/ZYLO-DESKLET.exe ./windows/dist/SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title 'ZYLO Desklet for Windows v2.5' --notes-file ./windows/RELEASE-NOTES.md --draft
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create the draft release' }
+          $download = Join-Path $env:RUNNER_TEMP 'zylo-v2.5-verify'
+          New-Item -ItemType Directory -Path $download | Out-Null
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --dir $download --pattern 'ZYLO-DESKLET.exe'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download the draft asset for verification' }
+          $uploaded = (Get-FileHash -LiteralPath (Join-Path $download 'ZYLO-DESKLET.exe')).Hash
+          $built = (Get-FileHash -LiteralPath ./windows/dist/ZYLO-DESKLET.exe).Hash
+          if ($uploaded -ne $built) { throw 'Uploaded installer checksum differs' }
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the verified draft release' }
+

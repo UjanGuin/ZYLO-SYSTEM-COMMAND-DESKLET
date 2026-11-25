@@ -124,8 +124,9 @@ class ProviderClientTests(unittest.TestCase):
 
     def test_groq_uses_the_reported_wait_to_choose_the_key(self):
         for retry_after, message, expected in (
-            ("15.9", "Rate limit", "primary"),
-            ("16", "Rate limit", "backup"),
+            ("3.9", "Rate limit", "primary"),
+            ("4", "Rate limit", "backup"),
+            ("", "Please try again in 11.535s.", "backup"),
             ("", "Please try again in 1m7.4s.", "backup"),
         ):
             with self.subTest(retry_after=retry_after, message=message):
@@ -148,7 +149,7 @@ class ProviderClientTests(unittest.TestCase):
         client = worker_mod.GroqChatClient("primary", backup_api_key="backup")
         limited = self._response(429, {"error": {
             "message": ("Rate limit reached on tokens per minute (TPM): Limit 8000, Used 3209, "
-                        "Requested 6329. Please try again in 11.535s.")
+                        "Requested 6329. Please try again in 3.535s.")
         }})
         answer = self._response(200, {"choices": [{"message": {"content": "Recovered."}}]})
         sent = []
@@ -162,12 +163,12 @@ class ProviderClientTests(unittest.TestCase):
             patch.object(client._cancel_event, "wait", return_value=False) as wait,
         ):
             self.assertEqual(client.complete(model=worker_mod.GROQ_MODEL, messages=[]), "Recovered.")
-        wait.assert_called_once_with(12.535)
+        wait.assert_called_once_with(4.535)
         self.assertEqual([key for key, _ in sent], ["Bearer primary", "Bearer primary"])
         self.assertLess(sent[1][1]["max_completion_tokens"], sent[0][1]["max_completion_tokens"])
 
     def test_groq_uses_the_elapsed_time_for_a_network_timeout(self):
-        for elapsed, expected in ((10, "primary"), (18, "backup")):
+        for elapsed, expected in ((3, "primary"), (4, "backup")):
             with self.subTest(elapsed=elapsed):
                 client = worker_mod.GroqChatClient("primary", backup_api_key="backup")
                 answer = self._response(200, {"choices": [{"message": {"content": "Recovered."}}]})

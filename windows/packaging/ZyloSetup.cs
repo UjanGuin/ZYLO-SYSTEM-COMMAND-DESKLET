@@ -14,7 +14,7 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("ZYLO Desktop Assistant Setup")]
 [assembly: AssemblyProduct("ZYLO Desktop Assistant")]
-[assembly: AssemblyVersion("2.2.0.0")]
+[assembly: AssemblyVersion("2.5.0.0")]
 
 internal sealed class ZyloSetup : Form
 {
@@ -156,7 +156,7 @@ internal sealed class ZyloSetup : Form
                 string runtimeWindowed = Path.Combine(Path.GetDirectoryName(runtime), "pythonw.exe");
                 File.WriteAllText(Path.Combine(appPath, "python-runtime.txt"), runtimeWindowed);
                 File.Copy(Application.ExecutablePath, Path.Combine(appPath, "ZYLO.exe"), true);
-                SaveLocalDate(runtime, appPath, log);
+                PrepareProfile(runtime, appPath, log);
                 return appPath;
             }
             finally { setupLock.ReleaseMutex(); }
@@ -165,11 +165,13 @@ internal sealed class ZyloSetup : Form
 
     private static readonly string ImportCheck = "-E -s -c " + Quote("import zylo_win11, setup_app");
 
-    private static void SaveLocalDate(string runtime, string appPath, Action<string> log)
+    private static void PrepareProfile(string runtime, string appPath, Action<string> log)
     {
-        string command = "from step_desklet.core.config import refresh_local_date; refresh_local_date()";
+        string command = "from step_desklet.core.config import refresh_local_date; " +
+            "from step_desklet.core.skills import ensure_skills_directory; " +
+            "ensure_skills_directory(); refresh_local_date()";
         if (Run(runtime, "-E -s -B -c " + Quote(command), appPath, log) != 0)
-            log("ZYLO will check the local date when it starts.");
+            log("ZYLO will refresh the bundled skills and local date when it starts.");
     }
 
     private static string FindInstalledRuntime(string appPath, string basePath)
