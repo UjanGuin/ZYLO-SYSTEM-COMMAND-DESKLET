@@ -1,0 +1,51 @@
+name: Publish liNi 3.0
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-lini-3.0-once.yml'
+
+permissions: {}
+
+jobs:
+  release:
+    if: github.repository == 'UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET' && github.event.before == '465c147cc7ced6a671bbbfca6a65d85950587177'
+    runs-on: windows-latest
+    timeout-minutes: 6
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify installer and publish the 3.0 release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = 'windows-v3.0'
+          $fileName = 'liNi-Setup-Windows-x64.exe'
+          $installer = (Resolve-Path "windows/downloads/$fileName").Path
+          $expected = '98093b890b7988e858ff0a083e79c237fee050b1abc9a5d0c32e0ea115e350d2'
+          if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $expected) {
+            throw 'Unexpected installer checksum.'
+          }
+          if ([System.Reflection.AssemblyName]::GetAssemblyName($installer).Version.ToString() -ne '3.0.0.0') {
+            throw 'Unexpected installer version.'
+          }
+          gh release create $tag $installer ./windows/downloads/SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --target '465c147cc7ced6a671bbbfca6a65d85950587177' --title 'liNi 3.0 for Windows' --notes-file ./windows/RELEASE-NOTES.md --draft
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create the release draft.' }
+          $staging = Join-Path $env:RUNNER_TEMP 'lini-3.0-verify'
+          New-Item -ItemType Directory -Path $staging | Out-Null
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --dir $staging --pattern $fileName
+          if ($LASTEXITCODE -ne 0) { throw 'Could not verify the uploaded installer.' }
+          if ((Get-FileHash -LiteralPath (Join-Path $staging $fileName) -Algorithm SHA256).Hash -ne $expected) {
+            throw 'Uploaded installer checksum differs.'
+          }
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the verified release.' }
+          gh release view $tag --repo $env:GITHUB_REPOSITORY --json url,isDraft,tagName,assets
+          if ($LASTEXITCODE -ne 0) { throw 'Could not verify the published release.' }
