@@ -14,6 +14,7 @@ liNi is a desktop assistant by Ujan Guin. The Windows 11 app brings AI chat, voi
 ## Windows 11 x64
 
 - [Download the liNi 3.0 installer](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/windows/downloads/liNi-Setup-Windows-x64.exe)
+- [liNi 3.0 on GitHub Releases](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/tag/windows-v3.0)
 - [Windows setup and build guide](windows/README.md)
 - [Windows 3.0 release notes](windows/RELEASE-NOTES.md)
 - [Installer SHA-256 checksum](windows/downloads/SHA256SUMS.txt)
