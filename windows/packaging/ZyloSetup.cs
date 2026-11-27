@@ -14,8 +14,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("liNi Desktop Assistant Setup")]
 [assembly: AssemblyProduct("liNi Desktop Assistant")]
-[assembly: AssemblyVersion("2.8.0.0")]
-[assembly: AssemblyFileVersion("2.8.0.0")]
+[assembly: AssemblyVersion("3.0.0.0")]
+[assembly: AssemblyFileVersion("3.0.0.0")]
 
 internal sealed class ZyloSetup : Form
 {
@@ -46,7 +46,7 @@ internal sealed class ZyloSetup : Form
 
     private ZyloSetup()
     {
-        Text = "liNi 2.8 Setup";
+        Text = "liNi 3.0 Setup";
         Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(520, 390);
@@ -58,7 +58,7 @@ internal sealed class ZyloSetup : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.Controls.Add(new Label { Text = "Install liNi 2.8 · Voice and Chats", AutoSize = true, Font = new Font("Segoe UI", 17, FontStyle.Bold) }, 0, 0);
+        layout.Controls.Add(new Label { Text = "Install liNi 3.0 · Voice and Chats", AutoSize = true, Font = new Font("Segoe UI", 17, FontStyle.Bold) }, 0, 0);
         layout.Controls.Add(new Label {
             Text = "Adds liNi Chats to Windows Search and Voice to Settings. Quit the running desklet from its tray icon before installing.",
             AutoSize = true, MaximumSize = new Size(510, 0), Margin = new Padding(3, 8, 3, 12)
@@ -107,7 +107,7 @@ internal sealed class ZyloSetup : Form
         {
             CreateShortcut(appPath, Environment.GetFolderPath(Environment.SpecialFolder.Programs));
             CreateShortcut(appPath, Environment.GetFolderPath(Environment.SpecialFolder.Programs), true);
-            status.Text = "liNi 2.8 installed. Search Windows for liNi Chats.";
+            status.Text = "liNi 3.0 installed. Search Windows for liNi Chats.";
         }
         catch (Exception ex)
         {

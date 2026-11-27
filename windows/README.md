@@ -1,6 +1,6 @@
 # liNi for Windows
 
-[Download liNi 2.8](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/windows/downloads/liNi-Setup-Windows-x64.exe) · [Release notes](RELEASE-NOTES.md)
+[Download liNi 3.0](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/windows/downloads/liNi-Setup-Windows-x64.exe) · [Release notes](RELEASE-NOTES.md)
 
 ## Install or upgrade
 
@@ -41,4 +41,4 @@ Use the Skills manager to review enabled scripts, trust hashes, and execution hi
 
 From the windows directory, run .\packaging\Build-WindowsInstaller.ps1 in PowerShell. The build uses the Windows x64 .NET Framework C# compiler and writes dist\liNi-Setup-Windows-x64.exe. See requirements-dev.txt for development dependencies and tests for offline checks.
 
-The bundled equation renderer is MathJax. Local voice options include Whisper, Moonshine, and Pocket TTS. The downloads page and the application verify the published installer and model checksums respectively.
+The bundled equation renderer is MathJax. Local voice options include Whisper, Moonshine, and Pocket TTS. The downloads page publishes the installer checksum. liNi verifies voice model downloads before using them.

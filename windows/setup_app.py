@@ -5,6 +5,7 @@ import math
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
@@ -91,6 +92,24 @@ GROQ_API_KEY_URL = "https://console.groq.com/keys"
 TAVILY_API_KEY_URL = "https://app.tavily.com/home"
 LMSTUDIO_DOCS_URL = "https://lmstudio.ai/docs/app/api"
 
+CHECKBOX_STYLE = """
+    QCheckBox { spacing: 10px; }
+    QCheckBox::indicator {
+        width: 16px; height: 16px; border: 1px solid #656a85;
+        border-radius: 5px; background: #141621;
+    }
+    QCheckBox::indicator:hover, QCheckBox::indicator:focus { border-color: #ccbcff; }
+    QCheckBox::indicator:checked {
+        background: #bcabff; border-color: #bcabff;
+        image: url("@CHECKMARK@");
+    }
+    QCheckBox::indicator:checked:hover, QCheckBox::indicator:checked:focus {
+        background: #d2c5ff; border-color: #eee6ff;
+    }
+    QCheckBox::indicator:disabled { background: #191b27; border-color: #40445a; }
+    QCheckBox::indicator:checked:disabled { background: #726688; border-color: #726688; }
+""".replace("@CHECKMARK@", (Path(__file__).parent / "step_desklet/win11/assets/checkmark.svg").as_posix())
+
 SETTINGS_STYLE = """
     QDialog#ZyloSettings {
         background: #12131c; color: #edf0fa;
@@ -156,7 +175,7 @@ SETTINGS_STYLE = """
     QPushButton#StudioSwatch[colorSelected="true"] { background: #302840; border: 1px solid #ae9bf2; }
     QLabel#SavedKey { color: #a9e5c9; background: #263a36; border-radius: 6px; padding: 4px 8px; }
     QLabel#EmptyKey { color: #b1b8ce; background: #272a3d; border-radius: 6px; padding: 4px 8px; }
-    QCheckBox { color: #e4e7f5; spacing: 9px; }
+    QCheckBox { color: #e4e7f5; }
     QCheckBox:disabled { color: #7c859e; }
     QSlider::groove:horizontal { height: 5px; background: #393e55; border-radius: 2px; }
     QSlider::sub-page:horizontal { background: #ad9af1; border-radius: 2px; }
@@ -168,7 +187,7 @@ SETTINGS_STYLE = """
         color: #b3aec7; background: #100f19; border: 1px solid #3c3850;
         border-radius: 9px; padding: 7px 10px;
     }
-"""
+""" + CHECKBOX_STYLE
 
 
 class SettingsComboBox(QComboBox):
@@ -1404,7 +1423,7 @@ class SkillManagerDialog(QDialog):
                 padding: 5px 10px;
             }
             QPushButton:hover { background: rgba(255,255,255,34); }
-        """)
+        """ + CHECKBOX_STYLE)
 
         layout = QVBoxLayout(self)
         intro = QLabel(
