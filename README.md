@@ -23,17 +23,34 @@ On Windows, liNi supports NVIDIA NIM, Groq, LM Studio, and FreeLLMAPI. Use local
 
 ## Desktop screenshots
 
-The screenshots below show the Fedora edition.
+### Windows 11
 
 <p align="center">
-  <a href="assets/desktop-01-idle.webp"><img src="assets/desktop-01-idle.webp" alt="ZYLO panel idle on the Fedora desktop" width="100%"></a><br>
-  <sub><b>01 · Desktop panel</b> — ZYLO locked on the desktop, ready for a prompt.</sub>
+  <a href="assets/windows-greeting.png"><img src="assets/windows-greeting.png" alt="The compact liNi desklet showing a greeting on Windows 11" width="100%"></a><br>
+  <sub>A short reply in the compact Windows desklet.</sub>
 </p>
 
 <p align="center">
-  <a href="assets/desktop-02-response.webp"><img src="assets/desktop-02-response.webp" alt="ZYLO showing an assistant response on the Fedora desktop" width="100%"></a><br>
-  <sub><b>02 · Assistant response</b> — A reply expands above the compact input.</sub>
+  <a href="assets/windows-thinking.png"><img src="assets/windows-thinking.png" alt="The liNi desklet in its Thinking state" width="100%"></a><br>
+  <sub>The desklet shows when a request is in progress.</sub>
 </p>
+
+<p align="center">
+  <a href="assets/windows-file-search.png"><img src="assets/windows-file-search.png" alt="The file-finding skill searching Windows folders" width="100%"></a><br>
+  <sub>The file-finding skill searches registered Windows folders.</sub>
+</p>
+
+<p align="center">
+  <a href="assets/windows-file-search-glow.png"><img src="assets/windows-file-search-glow.png" alt="The file search with an animated gradient glow" width="100%"></a><br>
+  <sub>The gradient glow animates while the file search runs.</sub>
+</p>
+
+<p align="center">
+  <a href="assets/windows-assistant-response.png"><img src="assets/windows-assistant-response.png" alt="liNi on Windows 11 with an expanded assistant response" width="100%"></a><br>
+  <sub>An expanded assistant response on Windows 11.</sub>
+</p>
+
+### Fedora Workstation
 
 <p align="center">
   <a href="assets/desktop-03-executing.webp"><img src="assets/desktop-03-executing.webp" alt="ZYLO showing command execution status on the Fedora desktop" width="100%"></a><br>
