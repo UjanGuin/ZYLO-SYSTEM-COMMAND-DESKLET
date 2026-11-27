@@ -55,6 +55,7 @@ def _open_request_job(pid: int):
 
 class DeskletRequest(QProcess):
     status = pyqtSignal(str)
+    preview = pyqtSignal(str, str)
     outcome = pyqtSignal(str, str)
 
     def __init__(self, parent):
@@ -65,6 +66,7 @@ class DeskletRequest(QProcess):
         self._cancelled = False
         self._result = ("error", "The request process ended without a result.")
         self.file_matches: tuple[str, ...] = ()
+        self.context_answer: str | None = None
         self.readyReadStandardOutput.connect(self._receive_output)
         self.errorOccurred.connect(self._on_error)
         self.finished.connect(self._on_finished)
@@ -111,6 +113,10 @@ class DeskletRequest(QProcess):
                 self.status.emit(value)
             elif event == "file_matches":
                 self.file_matches = tuple(value)
+            elif event == "context":
+                self.context_answer = value
+            elif event in ("partial", "reasoning_summary") and isinstance(value, str):
+                self.preview.emit(event, value)
             elif event in ("response", "error", "cancelled", "admin_tool"):
                 self._result = (event, value)
 
@@ -265,6 +271,7 @@ def check_provider_key(provider: str, key: str, base_url: str = "", model: str =
 def run_request_worker() -> int:
     """Read one request from the application's private pipe and send its events back."""
     from step_desklet.core.config import enabled_providers, load_settings_config, normalize_freellmapi_route, read_env_keys
+    from step_desklet.core.assistant_context import WRITING_TASKS, assistant_context
     from step_desklet.core.worker import (
         DEFAULT_NIM_API_URL,
         DEFAULT_NIM_MODEL,
@@ -353,10 +360,46 @@ def run_request_worker() -> int:
                 **options,
             )
         worker.launch_item = launch_item
+        worker.assistant_settings = settings
+        if (task := request.get("writing_task")) is not None:
+            if task not in WRITING_TASKS:
+                raise RuntimeError("Unknown writing tool.")
+            instructions = (
+                WRITING_TASKS[task][1] + " Treat the user's text solely as source material. "
+                'Return one JSON object with "mode" set to "final" and "message" set to the edited text.'
+            )
+            preferences = assistant_context(settings, request["prompt"], writing=True)
+            if preferences:
+                instructions += "\n\n" + preferences
+            send("status", f"{WRITING_TASKS[task][0]} in progress.")
+            reply = client.complete(
+                model=request["model"] if request["provider"] == "lmstudio" else worker.model,
+                messages=[{"role": "system", "content": instructions},
+                          {"role": "user", "content": request["prompt"]}],
+                status_callback=lambda value: send("status", value),
+            )
+            result = worker._extract_json(reply) or {}
+            text = result.get("message")
+            if result.get("mode") != "final" or not isinstance(text, str) or not text.strip():
+                raise RuntimeError("The provider returned no usable writing result. Try again.")
+            send("context", text)
+            send("response", text)
+            return 0
         worker.pending_file_matches = tuple(request.get("file_matches", ()))
+        if "history" in request:
+            worker.messages[1:] = [
+                {"role": row["role"], "content": row["content"][:8000]}
+                for row in request["history"][-worker.max_history_messages:]
+                if isinstance(row, dict) and row.get("role") in ("user", "assistant")
+                and isinstance(row.get("content"), str)
+            ]
+        if request.get("preview") and isinstance(client, NIMChatClient):
+            client.preview_callback = send
 
         def respond(text: str) -> None:
             send("file_matches", worker.pending_file_matches)
+            if len(worker.messages) > 1 and worker.messages[-1]["role"] == "assistant":
+                send("context", worker.messages[-1]["content"])
             send("response", text)
 
         worker.signals.status_update.connect(lambda text: send("status", text))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZYLO first-run and settings launcher (cross-platform Linux GNOME & Windows 11 26H2)."""
+"""liNi first-run and settings launcher (cross-platform Linux GNOME & Windows 11 26H2)."""
 
 import math
 import re
@@ -14,6 +14,7 @@ from PyQt6.QtGui import (
     QIcon,
     QMouseEvent,
     QPainter,
+    QPalette,
     QPen,
     QPixmap,
     QRadialGradient,
@@ -31,7 +32,10 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QKeySequenceEdit,
     QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -68,6 +72,7 @@ from step_desklet.core.config import (
     write_provider,
 )
 from step_desklet.core.installed_apps import catalog_names, load_app_catalog
+from step_desklet.core.assistant_context import weather_coordinates
 from step_desklet.core.skills import (
     clear_skill_history,
     discover_skills,
@@ -113,6 +118,12 @@ SETTINGS_STYLE = """
     }
     QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #ad9afa; }
     QLineEdit:disabled, QComboBox:disabled { color: #8089a0; }
+    QPlainTextEdit#StudioInstructions {
+        color: #f5f4fe; background: #141621; border: 1px solid #393d53;
+        border-radius: 8px; padding: 7px 10px;
+        selection-background-color: #49396f; selection-color: #ffffff;
+    }
+    QPlainTextEdit#StudioInstructions:focus { border-color: #ad9afa; }
     QComboBox::drop-down { border: none; width: 24px; }
     QComboBox::down-arrow { image: none; }
     QComboBox QLineEdit { border: none; padding: 0; }
@@ -305,9 +316,9 @@ class SetupDialog(QDialog):
         row.addWidget(remove)
         return field, remove, row
 
-    def __init__(self, parent=None, *, show_desklet=None):
+    def __init__(self, parent=None, *, show_desklet=None, voice=None):
         super().__init__(parent)
-        self.setWindowTitle("ZYLO Settings" if IS_WINDOWS else "Set up ZYLO")
+        self.setWindowTitle("liNi Settings" if IS_WINDOWS else "Set up liNi")
         if IS_WINDOWS:
             self.setWindowFlags(
                 Qt.WindowType.Window
@@ -331,7 +342,7 @@ class SetupDialog(QDialog):
         accent_cfg = get_accent_config(current)
 
         self.name = QLineEdit(current.get("name", ""))
-        self.name.setPlaceholderText("What should ZYLO call you?")
+        self.name.setPlaceholderText("What should liNi call you?")
 
         self.provider_combo = SettingsComboBox()
         self.lmstudio_enabled = QCheckBox("Show LM Studio in the provider switcher")
@@ -410,7 +421,7 @@ class SetupDialog(QDialog):
         self.wheel_system_btn = QPushButton("OS Picker…")
         self.wheel_system_btn.clicked.connect(self._open_system_color_dialog)
 
-        self.startup_checkbox = QCheckBox("Launch ZYLO automatically when I sign in to Windows 11")
+        self.startup_checkbox = QCheckBox("Launch liNi automatically when I sign in to Windows 11")
         if IS_WINDOWS:
             self.startup_checkbox.setChecked(
                 current.get("launchOnStartup", is_windows_startup_enabled())
@@ -440,7 +451,7 @@ class SetupDialog(QDialog):
         memory.addRow("Conversation history", memory_row)
         general_cards = [
             self._studio_card("Profile", profile),
-            self._studio_card("Memory", memory, "Keeps the latest turns on this device. A turn is your message and ZYLO’s reply."),
+            self._studio_card("Memory", memory, "Keeps the latest turns on this device. A turn is your message and liNi’s reply."),
         ]
 
         nvidia = self._studio_form()
@@ -466,7 +477,7 @@ class SetupDialog(QDialog):
         groq.addRow("Backup key", groq_backup_row)
         if IS_WINDOWS:
             groq.addRow(self._muted(
-                "Once the Groq key is verified, ZYLO can send installed app names to Groq to build "
+                "Once the Groq key is verified, liNi can send installed app names to Groq to build "
                 "the list in the background. Launch paths stay on this PC. Control this in System."
             ))
 
@@ -548,6 +559,16 @@ class SetupDialog(QDialog):
         appearance.addWidget(self._build_desklet_preview())
         appearance.addLayout(self._theme_form)
         appearance.addLayout(wheel_box)
+        appearance_cards = [self._studio_card("Desklet theme", appearance)]
+        if IS_WINDOWS:
+            self.chat_bubble_color = current["chatBubbleColor"]
+            self.chat_bubble_button = QPushButton()
+            self.chat_bubble_button.setAccessibleName("Choose user message color")
+            self.chat_bubble_button.clicked.connect(self._choose_chat_bubble_color)
+            self._update_chat_bubble_button()
+            bubble_form = self._studio_form()
+            bubble_form.addRow("User message color", self.chat_bubble_button)
+            appearance_cards.append(self._studio_card("Chat bubbles", bubble_form))
 
         system = QVBoxLayout()
         system.setSpacing(10)
@@ -557,7 +578,7 @@ class SetupDialog(QDialog):
             self.admin_tools_checkbox.setChecked(current.get("allowAdminToolRequests") is True)
             system.addWidget(self.admin_tools_checkbox)
             system.addWidget(self._muted(
-                "ZYLO can ask to open tools such as Windows Features, Services, and Event Viewer. "
+                "liNi can ask to open tools such as Windows Features, Services, and Event Viewer. "
                 "You approve each launch, then make changes in the Windows tool."
             ))
 
@@ -616,15 +637,39 @@ class SetupDialog(QDialog):
             system_cards.append(self._studio_card(
                 "Installed app list", catalog_box,
                 "Rebuild after installing or removing apps. Groq receives names only. "
-                "Without a Groq key, ZYLO filters the list locally.",
+                "Without a Groq key, liNi filters the list locally.",
             ))
 
+        voice_sections = ()
+        if IS_WINDOWS:
+            self.custom_instructions = QPlainTextEdit(current["customInstructions"])
+            self.custom_instructions.setObjectName("StudioInstructions")
+            self.custom_instructions.setPlaceholderText("Preferred language, tone, or level of detail")
+            self.custom_instructions.setTabChangesFocus(True)
+            self.custom_instructions.document().setDocumentMargin(2)
+            self.custom_instructions.setFixedHeight(3 * self.custom_instructions.fontMetrics().lineSpacing() + 18)
+            instructions_palette = self.custom_instructions.palette()
+            instructions_palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#a5adc2"))
+            self.custom_instructions.setPalette(instructions_palette)
+            self.weather_location = QLineEdit(current["weatherLocation"])
+            self.weather_location.setPlaceholderText("Latitude, longitude")
+            self.weather_location.setMaxLength(64)
+            preferences = self._studio_form()
+            preferences.addRow("Custom instructions", self.custom_instructions)
+            preferences.addRow("Weather coordinates", self.weather_location)
+            general_cards.append(self._studio_card(
+                "Assistant preferences", preferences,
+                "Your provider receives your instructions and the PC's local time. "
+                "For weather questions, optional coordinates let liNi look up current conditions.",
+            ))
+            voice_sections = (("Voice", "Hold a shortcut to speak. Release it to send.", self._voice_cards(current, voice)),)
         self._build_studio(
             (
                 ("General", "Set your profile, preferred model provider, and conversation memory.", general_cards),
                 ("Providers", "Manage model connections. Leave any saved key field blank to keep it.", provider_cards),
-                ("Appearance", "Tune the colors and glow of your desklet.", [self._studio_card("Desklet theme", appearance)]),
+                ("Appearance", "Tune your desklet and chat colors.", appearance_cards),
                 ("System", "Manage startup, Windows tools, skills, and file search.", system_cards),
+                *voice_sections,
             ),
             show_desklet,
         )
@@ -636,6 +681,148 @@ class SetupDialog(QDialog):
         super().showEvent(event)
         if IS_WINDOWS:
             use_dark_title_bar(int(self.winId()))
+
+    def _voice_cards(self, current, voice):
+        from PyQt6.QtGui import QKeySequence
+        from step_desklet.win11.voice import VoiceController
+        from step_desklet.win11.voice_models import ASSETS, STT, TTS, VoiceDownloads, models_root
+
+        settings = current["voice"]
+        self._voice_controller = voice
+        self.voice_enabled = QCheckBox("Enable Voice Mode")
+        self.voice_enabled.setChecked(settings["enabled"])
+        self.voice_global = QCheckBox("Enable the global push-to-talk shortcut")
+        self.voice_global.setChecked(settings["globalShortcut"])
+        self.voice_shortcut = QKeySequenceEdit(QKeySequence.fromString(settings["shortcut"]))
+        self.voice_shortcut.setMaximumSequenceLength(1)
+        self.voice_shortcut.setToolTip("Win + Space is tried first. Windows may reserve it for switching keyboard layouts.")
+        self.voice_global.toggled.connect(self.voice_shortcut.setEnabled)
+        self.voice_shortcut.setEnabled(self.voice_global.isChecked())
+        self.voice_review = QCheckBox("Review the transcript before sending")
+        self.voice_review.setChecked(settings["review"])
+        self.voice_spoken = QCheckBox("Read replies aloud for voice messages")
+        self.voice_spoken.setChecked(settings["spokenReplies"])
+        self.voice_tts = SettingsComboBox()
+        self.voice_tts.addItem("Windows speech", "windows")
+        self.voice_tts.addItem("Pocket TTS (experimental)", "pocket")
+        self.voice_tts.setCurrentIndex(self.voice_tts.findData(settings["ttsEngine"]))
+        self.voice_tts.setToolTip("Windows speech plays through the default output directly. Save changes to enable Pocket TTS.")
+        self.voice_mic = SettingsComboBox()
+        self.voice_speaker = SettingsComboBox()
+        for combo, devices, key in (
+            (self.voice_mic, VoiceController.inputs(), "microphone"),
+            (self.voice_speaker, VoiceController.outputs(), "speaker"),
+        ):
+            combo.addItem("Windows default", "")
+            for device in devices:
+                combo.addItem(device.description(), VoiceController.device_key(device))
+            index = combo.findData(settings[key])
+            if index < 0 and settings[key]:
+                combo.addItem("Saved device (unavailable)", settings[key])
+                index = combo.count() - 1
+            combo.setCurrentIndex(max(0, index))
+        info = self._muted(voice._hotkey_result if voice else "Enable Voice Mode and save to activate the shortcut.")
+        meter = QProgressBar()
+        meter.setTextVisible(False)
+        test_mic = QPushButton("Test microphone")
+        test_speaker = QPushButton("Test speaker")
+        test_mic.setEnabled(bool(voice))
+        test_speaker.setEnabled(bool(voice))
+        if voice:
+            voice.status.connect(info.setText)
+            voice.test_level.connect(meter.setValue)
+            test_mic.clicked.connect(lambda: voice.test_microphone(self.voice_mic.currentData()))
+            test_speaker.clicked.connect(
+                lambda: voice.test_speaker(self.voice_speaker.currentData(), self.voice_tts.currentData()),
+            )
+            self.finished.connect(voice.stop_microphone_test)
+        input_form = self._studio_form()
+        input_form.addRow(self.voice_enabled)
+        input_form.addRow(self.voice_global)
+        input_form.addRow("Shortcut", self.voice_shortcut)
+        input_form.addRow(info)
+        input_form.addRow("Microphone", self.voice_mic)
+        input_form.addRow(test_mic, meter)
+        input_form.addRow(self.voice_review)
+        output_form = self._studio_form()
+        output_form.addRow(self.voice_spoken)
+        output_form.addRow("Speech engine", self.voice_tts)
+        output_form.addRow("Output device", self.voice_speaker)
+        output_form.addRow(test_speaker)
+
+        downloads = VoiceDownloads.for_app()
+        model_form = self._studio_form()
+        bars = {}
+        for folder, filename, *_ in ASSETS:
+            label = {STT: "Whisper Small Q8 · 270 MB", TTS: "Pocket TTS · 110 MB"}.get(filename, "Speech output runtime")
+            bar = QProgressBar()
+            bar.setFormat("Saved" if (models_root() / folder / filename).is_file() else "Not downloaded")
+            bar.setValue(100 if (models_root() / folder / filename).is_file() else 0)
+            bars[filename] = bar
+            model_form.addRow(label, bar)
+        download = QPushButton("Download voice models")
+        cancel = QPushButton("Cancel download")
+        remove = QPushButton("Remove models")
+        download.setEnabled(not downloads.running)
+        cancel.setEnabled(downloads.running)
+        model_status = self._muted("Downloading…" if downloads.running else "")
+
+        def start():
+            download.setEnabled(False)
+            cancel.setEnabled(True)
+            model_status.setText("Downloading missing voice files…")
+            downloads.start(include_pocket=self.voice_tts.currentData() == "pocket")
+
+        def remove_models():
+            if downloads.running or (voice and voice.settings.get("enabled")):
+                model_status.setText("Stop the download or turn Voice Mode off and save before removing models.")
+                return
+            if QMessageBox.question(self, "Remove voice models", "Remove both downloaded speech models from this PC?") != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                for subfolder, filename in (("stt", STT), ("tts", TTS)):
+                    (models_root() / subfolder / filename).unlink(missing_ok=True)
+                    bars[filename].setValue(0)
+                    bars[filename].setFormat("Not downloaded")
+            except OSError:
+                model_status.setText("A voice model is still in use. Close liNi before removing it.")
+                return
+            model_status.setText("Voice models removed.")
+
+        def progress(name, percent):
+            bars[name].setFormat("Verified" if percent == 100 else "%p%")
+            bars[name].setValue(percent)
+
+        def finished(ok, message):
+            model_status.setText(message)
+            download.setText("Verify voice models" if ok else "Retry download")
+            download.setEnabled(True)
+            cancel.setEnabled(False)
+
+        download.clicked.connect(start)
+        cancel.clicked.connect(downloads.cancelled.set)
+        remove.clicked.connect(remove_models)
+        downloads.progress.connect(progress)
+        downloads.finished.connect(finished)
+        self.destroyed.connect(lambda: self._disconnect_voice_downloads(downloads, progress, finished))
+        actions = QHBoxLayout()
+        for button in (download, cancel, remove):
+            actions.addWidget(button)
+        model_form.addRow(actions)
+        model_form.addRow(model_status)
+        return [
+            self._studio_card("Push to talk", input_form),
+            self._studio_card("Spoken replies", output_form),
+            self._studio_card("Voice models", model_form, "One download sets up local transcription and English speech."),
+        ]
+
+    @staticmethod
+    def _disconnect_voice_downloads(downloads, *slots):
+        for signal, slot in zip((downloads.progress, downloads.finished), slots):
+            try:
+                signal.disconnect(slot)
+            except (TypeError, RuntimeError):
+                pass
 
     def _refresh_provider_choices(self, preferred=None) -> None:
         current = preferred or self.provider_combo.currentData()
@@ -713,12 +900,12 @@ class SetupDialog(QDialog):
         preview_name.setTextFormat(Qt.TextFormat.PlainText)
 
         def update_name(name):
-            preview_name.setText((name.strip() or "ZYLO")[:32].upper())
+            preview_name.setText(name.strip()[:32].upper() or "liNi")
 
         update_name(self.name.text())
         self.name.textChanged.connect(update_name)
         surface_layout.addWidget(preview_name)
-        prompt = QLabel("Ask ZYLO")
+        prompt = QLabel("Ask liNi")
         prompt.setObjectName("StudioPreviewPrompt")
         surface_layout.addWidget(prompt)
         rim.addWidget(surface)
@@ -734,7 +921,7 @@ class SetupDialog(QDialog):
         logo = QLabel()
         logo.setFixedSize(39, 39)
         logo.setPixmap(self.windowIcon().pixmap(QSize(39, 39), self.devicePixelRatioF()))
-        brand_name = QLabel("ZYLO")
+        brand_name = QLabel("liNi")
         brand_name.setObjectName("StudioBrand")
         brand = QHBoxLayout()
         brand.setSpacing(8)
@@ -1099,7 +1286,7 @@ class SetupDialog(QDialog):
 
     def _open_system_color_dialog(self) -> None:
         current = QColor(self._target_color())
-        color = QColorDialog.getColor(current, parent=self, title="Choose ZYLO color")
+        color = QColorDialog.getColor(current, parent=self, title="Choose liNi color")
         if color.isValid():
             hex_val = color.name()
             self._apply_color_to_target(hex_val)
@@ -1145,6 +1332,18 @@ class SetupDialog(QDialog):
             "gradientEnd": self.gradient_end,
         }
 
+    def _update_chat_bubble_button(self):
+        chip = QPixmap(18, 18)
+        chip.fill(QColor(self.chat_bubble_color))
+        self.chat_bubble_button.setIcon(QIcon(chip))
+        self.chat_bubble_button.setText(self.chat_bubble_color.upper())
+
+    def _choose_chat_bubble_color(self):
+        color = QColorDialog.getColor(QColor(self.chat_bubble_color), self, "User message color")
+        if color.isValid():
+            self.chat_bubble_color = color.name()
+            self._update_chat_bubble_button()
+
     def values(self):
         lms_url = normalize_lmstudio_base_url(self.lmstudio_url.text().strip() or DEFAULT_LMSTUDIO_BASE_URL)
         data = {
@@ -1156,6 +1355,9 @@ class SetupDialog(QDialog):
             "memoryTurns": int(self.memory_turns.value()),
         }
         if IS_WINDOWS:
+            data["customInstructions"] = self.custom_instructions.toPlainText().strip()[:8000]
+            data["chatBubbleColor"] = self.chat_bubble_color
+            data["weatherLocation"] = self.weather_location.text().strip()
             data["launchOnStartup"] = self.startup_checkbox.isChecked()
             data["lmstudioEnabled"] = self.lmstudio_enabled.isChecked()
             data["freeLlmApiEnabled"] = self.freellmapi_enabled.isChecked()
@@ -1165,6 +1367,21 @@ class SetupDialog(QDialog):
             data["fileSearchLevels"] = {
                 folder: level.value() for folder, level in self.file_search_depths.items()
             }
+            from step_desklet.win11.voice import DEFAULT_SHORTCUT
+            from PyQt6.QtGui import QKeySequence
+
+            data["voice"] = {
+                "enabled": self.voice_enabled.isChecked(),
+                "globalShortcut": self.voice_global.isChecked(),
+                "shortcut": self.voice_shortcut.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+                or DEFAULT_SHORTCUT,
+                "review": self.voice_review.isChecked(),
+                "spokenReplies": self.voice_spoken.isChecked(),
+                "ttsEngine": self.voice_tts.currentData(),
+                "ttsEngineExplicit": True,
+                "microphone": self.voice_mic.currentData(),
+                "speaker": self.voice_speaker.currentData(),
+            }
         return data
 
 
@@ -1173,7 +1390,7 @@ class SkillManagerDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("ZYLO Skills, Trust & Execution History")
+        self.setWindowTitle("liNi Skills, Trust & Execution History")
         self.resize(620, 620)
         self.setStyleSheet("""
             QDialog { background: #141e30; color: #f4f8ff; }
@@ -1354,6 +1571,19 @@ def save_setup(dialog: SetupDialog) -> bool:
     lms_key = dialog.lmstudio_key.text().strip() or previous["LMSTUDIO_API_KEY"]
     free_key = (dialog.freellmapi_key.text().strip() or previous["FREELLMAPI_API_KEY"]) if IS_WINDOWS else None
     provider = values["defaultProvider"]
+    if IS_WINDOWS and values["weatherLocation"] and weather_coordinates(values["weatherLocation"]) is None:
+        QMessageBox.warning(dialog, "Invalid weather coordinates", "Enter a latitude and longitude separated by a comma.")
+        dialog._select_section("General", dialog.weather_location)
+        return False
+    if IS_WINDOWS and values["voice"]["enabled"] and values["voice"]["globalShortcut"]:
+        from step_desklet.win11.voice import win_shortcut
+
+        try:
+            win_shortcut(values["voice"]["shortcut"])
+        except ValueError as error:
+            QMessageBox.warning(dialog, "Choose a voice shortcut", str(error))
+            dialog._select_section("Voice", dialog.voice_shortcut)
+            return False
 
     if provider == "nim" and not api_key:
         QMessageBox.warning(
@@ -1402,7 +1632,7 @@ def save_setup(dialog: SetupDialog) -> bool:
         else:
             install_extension()
     except Exception as error:
-        QMessageBox.critical(dialog, "ZYLO setup failed", str(error))
+        QMessageBox.critical(dialog, "liNi setup failed", str(error))
         return False
     return True
 
@@ -1413,11 +1643,11 @@ def run_setup_dialog(parent=None, show_ready_popup: bool = True) -> bool:
         return False
     if show_ready_popup:
         msg = (
-            "ZYLO settings were saved."
+            "liNi settings were saved."
             if IS_WINDOWS
-            else "ZYLO is enabled on your desktop and will start with GNOME when you log in."
+            else "liNi is enabled on your desktop and will start with GNOME when you log in."
         )
-        QMessageBox.information(dialog, "ZYLO is ready", msg)
+        QMessageBox.information(dialog, "liNi is ready", msg)
     return True
 
 
@@ -1428,8 +1658,8 @@ def main():
         return tray_main()
     set_zylo_app_user_model_id()
     app = QApplication(sys.argv)
-    app.setApplicationName("ZYLO")
-    app.setApplicationDisplayName("ZYLO Desktop Assistant")
+    app.setApplicationName("liNi")
+    app.setApplicationDisplayName("liNi Desktop Assistant")
     app.setWindowIcon(zylo_app_icon())
     ok = run_setup_dialog(show_ready_popup=True)
     return 0 if ok else 1

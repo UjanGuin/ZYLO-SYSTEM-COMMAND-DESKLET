@@ -21,6 +21,7 @@ PROVIDER_LABELS = {
     "freellmapi": "FreeLLMAPI",
 }
 DEFAULT_MEMORY_TURNS = 12
+DEFAULT_CHAT_BUBBLE_COLOR = "#4c3085"
 MIN_MEMORY_TURNS = 4
 MAX_MEMORY_TURNS = 30
 DEFAULT_FILE_SEARCH_LEVELS = {
@@ -59,6 +60,7 @@ GRADIENT_PRESETS: Dict[str, tuple[str, str, str]] = {
     "Oceanic": ("#60a5fa", "#2dd4bf", "#a78bfa"),
     "Cyber Mint": ("#34d399", "#22d3ee", "#818cf8"),
     "Rose Gold": ("#f472b6", "#fbbf24", "#c084fc"),
+    "Editor's Choice": ("#fb6e11", "#f41a49", "#9552fc"),
 }
 
 
@@ -252,6 +254,8 @@ def validate_file_search_levels(raw: Any) -> Dict[str, int]:
 def validate_settings_config(raw: Any) -> Dict[str, Any]:
     """Normalize settings.json fields with safe defaults and bounds."""
     data = raw if isinstance(raw, dict) else {}
+    voice = data.get("voice")
+    voice = voice if isinstance(voice, dict) else {}
     accent_cfg = get_accent_config(data)
     provider = str(data.get("defaultProvider") or "").strip().lower()
     if provider not in enabled_providers(data):
@@ -285,11 +289,25 @@ def validate_settings_config(raw: Any) -> Dict[str, Any]:
         "lmstudioEnabled": parse_bool(data.get("lmstudioEnabled"), True),
         "freeLlmApiEnabled": parse_bool(data.get("freeLlmApiEnabled"), False),
         "freeLlmApiModel": normalize_freellmapi_route(data.get("freeLlmApiModel")),
+        "customInstructions": str(data.get("customInstructions") or "").strip()[:8000],
+        "chatBubbleColor": _valid_hex(data.get("chatBubbleColor"), DEFAULT_CHAT_BUBBLE_COLOR),
+        "weatherLocation": str(data.get("weatherLocation") or "").strip()[:64],
         "memoryTurns": DEFAULT_MEMORY_TURNS if turns is None else turns,
         "launchOnStartup": parse_bool(data.get("launchOnStartup"), False),
         "allowAdminToolRequests": data.get("allowAdminToolRequests") is True,
         "filterAppsWithGroq": parse_bool(data.get("filterAppsWithGroq"), True),
         "fileSearchLevels": validate_file_search_levels(data.get("fileSearchLevels")),
+        "voice": {
+            "enabled": parse_bool(voice.get("enabled"), False),
+            "globalShortcut": parse_bool(voice.get("globalShortcut"), True),
+            "shortcut": str(voice.get("shortcut") or "Meta+Space")[:80],
+            "review": parse_bool(voice.get("review"), False),
+            "spokenReplies": parse_bool(voice.get("spokenReplies"), True),
+            "ttsEngine": "pocket" if voice.get("ttsEngine") == "pocket" and voice.get("ttsEngineExplicit") is True else "windows",
+            "ttsEngineExplicit": voice.get("ttsEngineExplicit") is True,
+            "microphone": str(voice.get("microphone") or "")[:1024],
+            "speaker": str(voice.get("speaker") or "")[:1024],
+        },
     }
 
 

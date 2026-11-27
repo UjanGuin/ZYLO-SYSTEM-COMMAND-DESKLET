@@ -9,7 +9,6 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import date
 from typing import Optional, Dict, List, Any, Callable, Tuple, Set
 from urllib.parse import urlsplit
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
@@ -386,6 +385,26 @@ class NIMChatClient(_CloudChatClient):
                 finish_reason = choice.get("finish_reason") or finish_reason
                 delta = choice.get("delta") or {}
                 chunks.append(_content_text(delta.get("content")))
+                preview = getattr(self, "preview_callback", None)
+                if preview:
+                    summary = delta.get("reasoning_summary")
+                    if isinstance(summary, str) and summary.strip():
+                        preview("reasoning_summary", summary[:2000])
+                    now = time.monotonic()
+                    if now - getattr(self, "_last_preview_at", 0) >= 0.08:
+                        self._last_preview_at = now
+                        prefix = re.match(
+                            r'^\s*\{\s*"mode"\s*:\s*"final"\s*,\s*"message"\s*:\s*"((?:[^"\\]|\\.)*)',
+                            "".join(chunks),
+                        )
+                        if prefix:
+                            try:
+                                partial = json.loads('"' + prefix[1] + '"')
+                            except ValueError:
+                                pass
+                            else:
+                                if partial:
+                                    preview("partial", partial)
         except requests.RequestException as exc:
             if self._cancel_event.is_set():
                 raise OperationCancelledError("Operation cancelled.") from exc
@@ -649,7 +668,7 @@ class LMStudioChatClient:
         models = list_lmstudio_models(self.base_url, self.api_key)
         if not models:
             raise RuntimeError(
-                f"No model is currently loaded in LM Studio ({self.base_url}). Load a model in LM Studio or specify a Model ID in ZYLO Setup."
+                f"No model is currently loaded in LM Studio ({self.base_url}). Load a model in LM Studio or specify a Model ID in liNi Setup."
             )
         return models[0]
 
@@ -725,17 +744,17 @@ class FreeLLMAPIChatClient(LMStudioChatClient):
 
     def _resolve_model(self, requested_model: str) -> str:
         if not self.api_key:
-            raise RuntimeError("Add your FreeLLMAPI unified key in ZYLO Setup → Providers.")
+            raise RuntimeError("Add your FreeLLMAPI unified key in liNi Setup → Providers.")
         return normalize_freellmapi_route(requested_model or self.default_model)
 
     def _response_error(self, response: requests.Response) -> Exception:
         if response.status_code in (401, 403):
-            return RuntimeError("FreeLLMAPI rejected the unified key. Check it in ZYLO Setup.")
+            return RuntimeError("FreeLLMAPI rejected the unified key. Check it in liNi Setup.")
         return RuntimeError(
             f"FreeLLMAPI returned HTTP {response.status_code}. Check the active routing chain in FreeLLMAPI."
         )
 
-LINUX_SYSTEM_PROMPT = """You are the ZYLO-SYSTEM-COMMAND-DESKLET Laptop Intelligence.
+LINUX_SYSTEM_PROMPT = """You are liNi, a Linux desktop assistant.
 You have full, unrestricted access to this Linux machine. You are the ultimate guardian of this workstation. You are highly responsible, efficient, and professional.
 You can access the full filesystem, including system folders, by using absolute paths and `sudo` when needed.
 Your shell working directory persists between commands.
@@ -770,7 +789,7 @@ Rules:
 - Never include markdown fences. Output raw JSON only.
 """
 
-WINDOWS_SYSTEM_PROMPT = """You are the ZYLO-SYSTEM-COMMAND-DESKLET Windows 11 Intelligence.
+WINDOWS_SYSTEM_PROMPT = """You are liNi, a Windows 11 desktop assistant.
 You run inside PowerShell on Windows 11 26H2. You are efficient, reliable, and careful with user data and system settings.
 Your PowerShell working directory persists between commands.
 
@@ -1085,11 +1104,9 @@ class StepAIWorker(QObject):
                     return reply
         turn_system_prompt = SYSTEM_PROMPT
         if IS_WINDOWS:
-            turn_system_prompt += (
-                f"\n\nToday's local date from the Windows system clock is {date.today().isoformat()} (YYYY-MM-DD). "
-                "Use it to answer local calendar questions directly. Keep it in the background and mention the "
-                "current date, month, or year only when the user asks for it or it is needed for the answer."
-            )
+            from step_desklet.core.assistant_context import assistant_context
+
+            turn_system_prompt += "\n\n" + assistant_context(getattr(self, "assistant_settings", {}), user_text)
         turn_system_prompt += "\n\n" + format_skills_prompt_block(installed_skills)
         if self.allow_admin_tool_requests:
             tools = ", ".join(f"{tool_id} ({tool.label})" for tool_id, tool in ADMIN_TOOLS.items())
@@ -1213,9 +1230,9 @@ class StepAIWorker(QObject):
             if mode == "admin_tool":
                 tool_id = action.get("tool")
                 if not self.allow_admin_tool_requests:
-                    return "Administrator tool requests are disabled in ZYLO Settings."
+                    return "Administrator tool requests are disabled in liNi Settings."
                 if set(action) != {"mode", "tool"} or not isinstance(tool_id, str) or tool_id not in ADMIN_TOOLS:
-                    return "ZYLO can request only a supported Windows administrator tool."
+                    return "liNi can request only a supported Windows administrator tool."
                 return AdminToolRequest(tool_id)
 
             if mode == "final":
@@ -1460,7 +1477,7 @@ class StepAIWorker(QObject):
                 return f"That path does not exist: {path}"
             return self._open_verified_path(path, status_callback) if open_file else path
         if skill is None:
-            return "The find-file skill is missing. Upgrade ZYLO to search by file name, or provide the full path."
+            return "The find-file skill is missing. Upgrade liNi to search by file name, or provide the full path."
 
         _, result = self._execute_skill(skill, {"Name": target}, "Find the requested file", status_callback)
         if result.get("status") == CMD_STATUS_REQUIRES_PERMISSION:

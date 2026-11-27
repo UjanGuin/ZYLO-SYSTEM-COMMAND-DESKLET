@@ -12,28 +12,33 @@ using System.Security.Cryptography;
 using System.Threading;
 using System.Windows.Forms;
 
-[assembly: AssemblyTitle("ZYLO Desktop Assistant Setup")]
-[assembly: AssemblyProduct("ZYLO Desktop Assistant")]
-[assembly: AssemblyVersion("2.5.0.0")]
+[assembly: AssemblyTitle("liNi Desktop Assistant Setup")]
+[assembly: AssemblyProduct("liNi Desktop Assistant")]
+[assembly: AssemblyVersion("2.8.0.0")]
+[assembly: AssemblyFileVersion("2.8.0.0")]
 
 internal sealed class ZyloSetup : Form
 {
     private const string AppUserModelId = "ZYLO.DesktopAssistant";
     private readonly Button install = new Button { Text = "Install", Width = 100, Height = 32 };
-    private readonly CheckBox launch = new CheckBox { Text = "Open ZYLO after installation", Checked = true, AutoSize = true };
+    private readonly CheckBox launch = new CheckBox { Text = "Open liNi after installation", Checked = true, AutoSize = true };
     private readonly TextBox output = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly Label status = new Label { Text = "Ready to install", AutoSize = true };
     private readonly BackgroundWorker worker = new BackgroundWorker { WorkerReportsProgress = true };
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         if (String.Equals(Path.GetFileName(Application.ExecutablePath), "ZYLO.exe", StringComparison.OrdinalIgnoreCase))
         {
-            try { Process.Start(PythonLaunchInfo(AppDomain.CurrentDomain.BaseDirectory)); }
-            catch (Exception ex) { MessageBox.Show("Could not open ZYLO. " + ex.Message, "ZYLO Desktop Assistant", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            try {
+                var start = PythonLaunchInfo(AppDomain.CurrentDomain.BaseDirectory);
+                if (Array.IndexOf(args, "--chats") >= 0) start.Arguments += " --chats";
+                Process.Start(start);
+            }
+            catch (Exception ex) { MessageBox.Show("Could not open liNi. " + ex.Message, "liNi Desktop Assistant", MessageBoxButtons.OK, MessageBoxIcon.Error); }
             return;
         }
         Application.Run(new ZyloSetup());
@@ -41,7 +46,7 @@ internal sealed class ZyloSetup : Form
 
     private ZyloSetup()
     {
-        Text = "ZYLO Desktop Assistant Setup";
+        Text = "liNi 2.8 Setup";
         Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(520, 390);
@@ -53,9 +58,9 @@ internal sealed class ZyloSetup : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.Controls.Add(new Label { Text = "Install or update ZYLO Desktop Assistant", AutoSize = true, Font = new Font("Segoe UI", 17, FontStyle.Bold) }, 0, 0);
+        layout.Controls.Add(new Label { Text = "Install liNi 2.8 · Voice and Chats", AutoSize = true, Font = new Font("Segoe UI", 17, FontStyle.Bold) }, 0, 0);
         layout.Controls.Add(new Label {
-            Text = "Installs for your Windows account and reuses compatible ZYLO dependencies when available.",
+            Text = "Adds liNi Chats to Windows Search and Voice to Settings. Quit the running desklet from its tray icon before installing.",
             AutoSize = true, MaximumSize = new Size(510, 0), Margin = new Padding(3, 8, 3, 12)
         }, 0, 1);
         layout.Controls.Add(output, 0, 2);
@@ -101,7 +106,8 @@ internal sealed class ZyloSetup : Form
         try
         {
             CreateShortcut(appPath, Environment.GetFolderPath(Environment.SpecialFolder.Programs));
-            status.Text = "Installed. Open ZYLO from the Start menu.";
+            CreateShortcut(appPath, Environment.GetFolderPath(Environment.SpecialFolder.Programs), true);
+            status.Text = "liNi 2.8 installed. Search Windows for liNi Chats.";
         }
         catch (Exception ex)
         {
@@ -113,7 +119,7 @@ internal sealed class ZyloSetup : Form
         {
             try { Process.Start(LaunchInfo(appPath)); }
             catch (Exception ex) {
-                output.AppendText("Windows could not open ZYLO: " + ex.Message + Environment.NewLine);
+                output.AppendText("Windows could not open liNi: " + ex.Message + Environment.NewLine);
             }
         }
     }
@@ -125,14 +131,14 @@ internal sealed class ZyloSetup : Form
             bool ownsLock;
             try { ownsLock = setupLock.WaitOne(0); }
             catch (AbandonedMutexException) { ownsLock = true; }
-            if (!ownsLock) throw new InvalidOperationException("Another ZYLO installer is running.");
+            if (!ownsLock) throw new InvalidOperationException("Another liNi installer is running.");
             try
             {
                 Mutex activeApp;
                 if (Mutex.TryOpenExisting(@"Local\ZYLODesktopAssistantWin11", System.Security.AccessControl.MutexRights.Synchronize, out activeApp))
                 {
                     activeApp.Dispose();
-                    throw new InvalidOperationException("Quit ZYLO from its notification area icon and click Retry.");
+                    throw new InvalidOperationException("Quit liNi from its notification area icon and click Retry.");
                 }
                 log("Checking for 64-bit Python...");
                 string python = FindPython();
@@ -147,19 +153,34 @@ internal sealed class ZyloSetup : Form
                     if (!File.Exists(runtime) || Run(runtime, "-I -m pip --version", appPath, null) != 0)
                         RunChecked(python, "-I -m venv " + Quote(envPath), appPath, log, "Could not create the Python environment.");
                     InstallDependencies(runtime, appPath, log);
-                    RunChecked(runtime, ImportCheck, appPath, log, "ZYLO could not load its application modules.");
+                    RunChecked(runtime, ImportCheck, appPath, log, "liNi could not load its application modules.");
                 }
                 else
                 {
-                    log("Reusing the installed ZYLO dependencies.");
+                    log("Reusing the installed liNi dependencies.");
                 }
+                InstallOptionalFeatures(runtime, appPath, log);
                 string runtimeWindowed = Path.Combine(Path.GetDirectoryName(runtime), "pythonw.exe");
                 File.WriteAllText(Path.Combine(appPath, "python-runtime.txt"), runtimeWindowed);
                 File.Copy(Application.ExecutablePath, Path.Combine(appPath, "ZYLO.exe"), true);
+                try { UpdateStartup(appPath); }
+                catch (UnauthorizedAccessException) { log("Windows blocked the sign-in shortcut update."); }
+                catch (System.Security.SecurityException) { log("Windows blocked the sign-in shortcut update."); }
                 PrepareProfile(runtime, appPath, log);
                 return appPath;
             }
             finally { setupLock.ReleaseMutex(); }
+        }
+    }
+
+    private static void UpdateStartup(string appPath)
+    {
+        using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+            @"Software\Microsoft\Windows\CurrentVersion\Run", true))
+        {
+            const string name = "ZYLODesktopAssistant";
+            if (key != null && key.GetValue(name) is string)
+                key.SetValue(name, Quote(LaunchInfo(appPath).FileName) + " --background");
         }
     }
 
@@ -171,7 +192,7 @@ internal sealed class ZyloSetup : Form
             "from step_desklet.core.skills import ensure_skills_directory; " +
             "ensure_skills_directory(); refresh_local_date()";
         if (Run(runtime, "-E -s -B -c " + Quote(command), appPath, log) != 0)
-            log("ZYLO will refresh the bundled skills and local date when it starts.");
+            log("liNi will refresh the bundled skills and local date when it starts.");
     }
 
     private static string FindInstalledRuntime(string appPath, string basePath)
@@ -200,10 +221,35 @@ internal sealed class ZyloSetup : Form
 
     private static void InstallDependencies(string runtime, string appPath, Action<string> log)
     {
-        log("Installing ZYLO's Python dependencies...");
+        log("Installing liNi's Python dependencies...");
         RunChecked(runtime, "-I -m pip install --disable-pip-version-check --no-input --retries 2 --timeout 15 -r requirements.txt -c requirements-lock.txt",
             appPath, log, "Dependency installation failed. Check the error above and click Retry.");
         RunChecked(runtime, "-I -m pip check", appPath, log, "The installed dependencies failed their compatibility check.");
+    }
+
+    private static void InstallOptionalFeatures(string runtime, string appPath, Action<string> log)
+    {
+        InstallOptionalPackage(runtime, appPath, log, "voice transcription",
+            "transcribe-cpp==0.4.2 transcribe-cpp-native==0.4.2");
+        InstallOptionalPackage(runtime, appPath, log, "advanced chat formatting",
+            "PyQt6-WebEngine==6.140.1 Pygments==2.20.0");
+    }
+
+    private static void InstallOptionalPackage(string runtime, string appPath, Action<string> log,
+                                               string feature, string packages)
+    {
+        log("Checking support for " + feature + "...");
+        try
+        {
+            if (Run(runtime, "-I -m pip install --only-binary=:all: --disable-pip-version-check --no-input --retries 1 --timeout 10 -c requirements-lock.txt " + packages,
+                    appPath, log) == 0)
+                return;
+        }
+        catch (Win32Exception ex)
+        {
+            log(ex.Message);
+        }
+        log("liNi can start, but " + feature + " could not be installed. Run this installer again to retry.");
     }
 
     private static string UnpackRelease(string basePath)
@@ -282,27 +328,27 @@ internal sealed class ZyloSetup : Form
         };
     }
 
-    private static void CreateShortcut(string appPath, string programs)
+    private static void CreateShortcut(string appPath, string programs, bool chats = false)
     {
         Directory.CreateDirectory(programs);
         var start = LaunchInfo(appPath);
         dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell", true));
-        string shortcutPath = Path.Combine(programs, "ZYLO Desktop Assistant.lnk");
+        string shortcutPath = Path.Combine(programs, chats ? "liNi Chats.lnk" : "liNi Desktop Assistant.lnk");
         dynamic shortcut = shell.CreateShortcut(shortcutPath);
         shortcut.TargetPath = start.FileName;
-        shortcut.Arguments = start.Arguments;
+        shortcut.Arguments = start.Arguments + (chats ? " --chats" : "");
         shortcut.WorkingDirectory = start.WorkingDirectory;
-        shortcut.Description = "Open ZYLO Desktop Assistant";
+        shortcut.Description = chats ? "Open liNi Chats" : "Open liNi Desktop Assistant";
         shortcut.IconLocation = start.FileName + ",0";
         shortcut.Save();
-        SetShortcutAppId(shortcutPath);
+        SetShortcutAppId(shortcutPath, chats ? AppUserModelId + ".Chats" : AppUserModelId);
     }
 
-    private static void SetShortcutAppId(string shortcutPath)
+    private static void SetShortcutAppId(string shortcutPath, string appId)
     {
         var shellLinkId = new Guid("00021401-0000-0000-C000-000000000046");
         object link = Activator.CreateInstance(Type.GetTypeFromCLSID(shellLinkId));
-        var value = new PropVariant { Type = 31, Pointer = Marshal.StringToCoTaskMemUni(AppUserModelId) };
+        var value = new PropVariant { Type = 31, Pointer = Marshal.StringToCoTaskMemUni(appId) };
         try
         {
             var file = (IPersistFile)link;

@@ -1,4 +1,4 @@
-"""Windows 11 System Tray companion and setup lifecycle manager for ZYLO."""
+"""Windows 11 System Tray companion and setup lifecycle manager for liNi."""
 
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction, QColor, QDesktopServices, QIcon, QLinearGradient, QPainter, QPen, QPixmap
@@ -15,12 +15,13 @@ from step_desklet.core.config import (
     set_windows_startup,
 )
 from step_desklet.core.skills import ensure_skills_directory
+from step_desklet.core.chats import ChatStore
 from step_desklet.win11.desklet import ZyloDeskletWindow
 from step_desklet.win11.focus_monitor import DesktopFocusMonitor
 
 
 def create_zylo_tray_icon(settings: dict | None = None) -> QIcon:
-    """Render a crisp 64x64 ZYLO glyph icon for the Windows 11 tray."""
+    """Render a crisp 64x64 liNi glyph icon for the Windows 11 tray."""
     cfg = get_accent_config(settings)
     pixmap = QPixmap(64, 64)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -51,9 +52,10 @@ def create_zylo_tray_icon(settings: dict | None = None) -> QIcon:
             Qt.PenJoinStyle.RoundJoin,
         )
     )
-    painter.drawLine(20, 21, 44, 21)
-    painter.drawLine(44, 21, 20, 43)
-    painter.drawLine(20, 43, 44, 43)
+    painter.drawLine(21, 20, 21, 44)
+    painter.drawLine(21, 44, 31, 44)
+    painter.drawPoint(42, 22)
+    painter.drawLine(42, 30, 42, 44)
     painter.end()
     return QIcon(pixmap)
 
@@ -66,6 +68,17 @@ class ZyloWin11Controller:
         self.app.setQuitOnLastWindowClosed(False)
 
         self.desklet = ZyloDeskletWindow()
+        self.desklet.chat_store = ChatStore()
+        from step_desklet.win11.voice import VoiceController
+
+        self.voice = VoiceController(app, self.desklet.submit_text, self.open_setup, lambda: self.desklet._busy)
+        self.desklet.chat_finished.connect(self.voice.speak)
+        self._chats_window = None
+        self.desklet.request_chats.connect(self.open_chats)
+        self.desklet.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        chats_action = QAction("Open liNi Chats", self.desklet)
+        chats_action.triggered.connect(self.open_chats)
+        self.desklet.addAction(chats_action)
         self.desklet.request_setup.connect(self.open_setup)
         self.desklet.provider_changed.connect(self._sync_menu_labels)
         self.desklet.lock_changed.connect(self._sync_menu_labels)
@@ -87,7 +100,7 @@ class ZyloWin11Controller:
 
         icon = create_zylo_tray_icon(settings)
         self.tray = QSystemTrayIcon(icon, self.app)
-        self.tray.setToolTip("ZYLO Desktop Assistant · Windows 11")
+        self.tray.setToolTip("liNi Desktop Assistant · Windows 11")
         self.tray.activated.connect(self._on_tray_activated)
 
         menu = QMenu()
@@ -95,9 +108,15 @@ class ZyloWin11Controller:
         self.toggle_action.triggered.connect(self.toggle_desklet_visibility)
         menu.addAction(self.toggle_action)
 
-        self.setup_action = QAction("ZYLO Settings", menu)
+        self.setup_action = QAction("liNi Settings", menu)
         self.setup_action.triggered.connect(self.open_setup)
         menu.addAction(self.setup_action)
+        open_chats = QAction("Open liNi Chats", menu)
+        open_chats.triggered.connect(self.open_chats)
+        menu.addAction(open_chats)
+        stop_speech = QAction("Stop speaking", menu)
+        stop_speech.triggered.connect(self.voice.stop_speaking)
+        menu.addAction(stop_speech)
 
         menu.addSeparator()
 
@@ -133,7 +152,7 @@ class ZyloWin11Controller:
 
         menu.addSeparator()
 
-        quit_action = QAction("Quit ZYLO", menu)
+        quit_action = QAction("Quit liNi", menu)
         quit_action.triggered.connect(self.quit)
         menu.addAction(quit_action)
 
@@ -150,6 +169,7 @@ class ZyloWin11Controller:
         from step_desklet.core.config import get_conversation_file
 
         self.desklet.clear_all()
+        self.desklet.chat_store.clear_context()
         conv_file = get_conversation_file()
         try:
             if conv_file.exists():
@@ -199,13 +219,24 @@ class ZyloWin11Controller:
         self.desklet.apply_theme(theme)
         self.show_desklet()
 
+    def open_chats(self) -> None:
+        if self._is_shutting_down:
+            return
+        if self._chats_window is None:
+            from step_desklet.win11.chat_window import ChatsWindow
+
+            self._chats_window = ChatsWindow(self.desklet, getattr(self, "voice", None))
+        self._chats_window.showNormal()
+        self._chats_window.raise_()
+        self._chats_window.activateWindow()
+
     def open_setup(self) -> None:
         from setup_app import SetupDialog
 
         if self._is_shutting_down:
             return
         if self._settings_window is None:
-            window = SetupDialog(show_desklet=self.preview_desklet)
+            window = SetupDialog(show_desklet=self.preview_desklet, voice=self.voice)
             window.finished.connect(self._settings_finished)
             self._settings_window = window
         self._settings_window.showNormal()
@@ -223,6 +254,10 @@ class ZyloWin11Controller:
             return
 
         self.desklet.reload_settings()
+        self.voice.reload(self.desklet._settings)
+        if self._chats_window:
+            self._chats_window.refresh_providers()
+            self._chats_window.refresh()
         settings = read_json_file(get_settings_file())
         icon = create_zylo_tray_icon(settings)
         self.tray.setIcon(icon)
@@ -238,8 +273,9 @@ class ZyloWin11Controller:
         dlg.exec()
         self.focus_monitor.set_paused(False)
 
-    def start(self, force_setup: bool = False) -> None:
+    def start(self, force_setup: bool = False, open_chats: bool = False) -> None:
         refresh_local_date()
+        self.voice.reload(self.desklet._settings)
         self._local_date_timer.start()
         settings = read_json_file(get_settings_file())
         needs_first_run = force_setup or not (settings.get("name") and get_env_file().exists())
@@ -249,6 +285,8 @@ class ZyloWin11Controller:
         self.focus_monitor.start()
         if needs_first_run:
             self.open_setup()
+        if open_chats:
+            self.open_chats()
 
     def shutdown_cleanup(self) -> None:
         """Stop desktop monitoring and active requests before destroying the desklet."""
@@ -262,7 +300,10 @@ class ZyloWin11Controller:
             self._settings_window.reject()
         if jobs := getattr(self.app, "_zylo_app_list_jobs", None):
             jobs.cancel()
+        self.voice.shutdown()
         self.desklet.shutdown()
+        if self._chats_window:
+            self._chats_window.close()
         self.desklet.close()
         self.desklet.deleteLater()
         self.tray.hide()

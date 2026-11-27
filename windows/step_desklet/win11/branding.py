@@ -1,4 +1,4 @@
-"""ZYLO's window icon and Windows shell identity."""
+"""liNi's window icon and Windows shell identity."""
 
 import ctypes
 import sys

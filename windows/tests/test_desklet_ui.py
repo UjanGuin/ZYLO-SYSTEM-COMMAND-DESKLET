@@ -109,11 +109,14 @@ class DeskletUiTests(unittest.TestCase):
         dialog.show()
         self.assertEqual(dialog.windowType(), Qt.WindowType.Window)
         self.assertFalse(dialog.windowIcon().isNull())
-        self.assertEqual(dialog.windowTitle(), "ZYLO Settings")
+        self.assertEqual(dialog.windowTitle(), "liNi Settings")
         navigation = {button.text(): button for button in dialog.findChildren(QPushButton, "StudioNav")}
-        self.assertEqual(list(navigation), ["General", "Providers", "Appearance", "System"])
+        self.assertEqual(list(navigation), ["General", "Providers", "Appearance", "System", "Voice"])
         navigation["Appearance"].click()
         self.assertTrue(dialog.color_wheel.isVisible())
+        dialog.gradient_preset_combo.setCurrentIndex(dialog.gradient_preset_combo.findData("Editor's Choice"))
+        self.assertEqual((dialog.gradient_start, dialog.gradient_mid, dialog.gradient_end),
+                         ("#fb6e11", "#f41a49", "#9552fc"))
         self.assertFalse(dialog.key.isVisible())
         dialog.name.setText("Test profile")
         dialog.provider_combo.setCurrentIndex(dialog.provider_combo.findData("nim"))
@@ -269,8 +272,8 @@ class DeskletUiTests(unittest.TestCase):
 
         started = Event()
         disconnected = Event()
-        history_file = get_conversation_file()
-        pid_file = history_file.with_name("command-pids.txt")
+        pid_file = get_conversation_file().with_name("command-pids.txt")
+        chat_store = self.desklet.chat_store
         command = (
             "$child = Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60'"
             " -PassThru -NoNewWindow; "
@@ -328,9 +331,12 @@ class DeskletUiTests(unittest.TestCase):
         self.desklet.send_btn.click()
         self._wait_for(disconnected.is_set)
         self._wait_for(lambda: self.desklet.response_label.text() == "Fresh response.")
-        history = history_file.read_text(encoding="utf-8")
-        self.assertIn("Next request", history)
-        self.assertNotIn("Stalled request", history)
+        chat = chat_store.active()
+        history = chat_store.history(chat, 8)
+        self.assertEqual(history, [
+            {"role": "user", "content": "Next request"},
+            {"role": "assistant", "content": "Fresh response."},
+        ])
 
         self.desklet.prompt_input.setText("Start command")
         self.desklet.send_btn.click()
@@ -354,7 +360,7 @@ class DeskletUiTests(unittest.TestCase):
             for handle in handles:
                 if handle:
                     kernel.CloseHandle(handle)
-        self.assertEqual(history_file.read_text(encoding="utf-8"), history)
+        self.assertEqual(chat_store.history(chat, 8), history)
 
     def test_stop_dismisses_a_pending_administrator_tool_request(self):
         from step_desklet.core.config import get_settings_file, write_json_file

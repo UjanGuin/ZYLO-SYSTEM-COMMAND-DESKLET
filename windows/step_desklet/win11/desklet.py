@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 )
 
 from step_desklet.core.admin_tools import ADMIN_TOOLS
+from step_desklet.core.chats import ACTIVE_CHAT
 from step_desklet.core.config import (
     DEFAULT_DESKLET_WIDTH,
     DEFAULT_DESKLET_X,
@@ -206,16 +207,21 @@ class GradientInputShell(QFrame):
 
 
 class ZyloDeskletWindow(QWidget):
-    """Floating Windows 11 Acrylic glass desklet for ZYLO Desktop Assistant."""
+    """Floating Windows 11 Acrylic glass desklet for liNi Desktop Assistant."""
 
     request_setup = pyqtSignal()
+    request_chats = pyqtSignal()
+    chat_changed = pyqtSignal()
+    chat_status = pyqtSignal(str)
+    chat_preview = pyqtSignal(str, str)
+    chat_finished = pyqtSignal(str, str)
     provider_changed = pyqtSignal(str)
     lock_changed = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("ZyloDeskletWindow")
-        self.setWindowTitle("ZYLO")
+        self.setWindowTitle("liNi")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.Tool
@@ -238,6 +244,10 @@ class ZyloDeskletWindow(QWidget):
 
         self._request: Optional[DeskletRequest] = None
         self._file_matches: tuple[str, ...] = ()
+        self.chat_store = None
+        self._chat_turn = None
+        self._file_match_chat = None
+        self._context_answer = None
         self._admin_prompt: Optional[QMessageBox] = None
         self._busy = False
         self._shutting_down = False
@@ -284,7 +294,7 @@ class ZyloDeskletWindow(QWidget):
         handle_layout.setContentsMargins(0, 0, 8, 0)
         handle_layout.setSpacing(1)
 
-        self.title_label = QLabel(self._settings.get("name") or "ZYLO", self.handle_widget)
+        self.title_label = QLabel(self._settings.get("name") or "liNi", self.handle_widget)
         self.title_label.setObjectName("ZyloTitle")
         self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.subtitle_label = QLabel("SYSTEM COMMAND", self.handle_widget)
@@ -344,6 +354,7 @@ class ZyloDeskletWindow(QWidget):
         self.response_label = QLabel(self.message_panel)
         self.response_label.setObjectName("ZyloResponse")
         self.response_label.setWordWrap(True)
+        self.response_label.setTextFormat(Qt.TextFormat.RichText)
         self.response_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.response_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.response_label.hide()
@@ -368,7 +379,7 @@ class ZyloDeskletWindow(QWidget):
 
         self.prompt_input = QLineEdit(self.input_shell)
         self.prompt_input.setObjectName("ZyloInput")
-        self.prompt_input.setPlaceholderText("Ask ZYLO")
+        self.prompt_input.setPlaceholderText("Ask liNi")
         self.prompt_input.returnPressed.connect(self.submit_prompt)
         input_layout.addWidget(self.prompt_input, 1)
 
@@ -588,7 +599,7 @@ class ZyloDeskletWindow(QWidget):
         self._settings = load_settings_config()
         self._provider = read_provider(self._settings)
         self._update_provider_button()
-        self.title_label.setText(self._settings.get("name") or "ZYLO")
+        self.title_label.setText(self._settings.get("name") or "liNi")
         self.apply_theme()
         self._fit_height()
 
@@ -647,8 +658,13 @@ class ZyloDeskletWindow(QWidget):
         self.model_btn.setAccessibleName(label)
 
     def toggle_provider(self) -> None:
+        self.select_provider(self.next_provider())
+
+    def select_provider(self, provider: str) -> None:
+        if provider not in enabled_providers(self._settings) or provider == self._provider:
+            return
         self._provider_status_timer.stop()
-        self._provider = self.next_provider()
+        self._provider = provider
         self._update_provider_button()
         write_provider(self._provider)
         if self._provider == "groq":
@@ -677,6 +693,7 @@ class ZyloDeskletWindow(QWidget):
         self.status_label.hide()
         self.prompt_input.clear()
         self._set_busy(False)
+        self.chat_changed.emit()
         if not self._shutting_down:
             self.prompt_input.setEnabled(True)
             self.send_btn.setEnabled(True)
@@ -685,6 +702,7 @@ class ZyloDeskletWindow(QWidget):
 
     def _cancel_request(self) -> None:
         self._file_matches = ()
+        self._finish_chat("", "cancelled")
         request, self._request = self._request, None
         if request is not None:
             request.cancel()
@@ -703,9 +721,13 @@ class ZyloDeskletWindow(QWidget):
             self._fit_height()
 
     def submit_prompt(self) -> None:
-        prompt = self.prompt_input.text().strip()
+        self.submit_text(self.prompt_input.text(), "desklet")
+
+    def submit_text(self, prompt: str, source: str = "chat", provider: str | None = None,
+                    *, chat_id=ACTIVE_CHAT, writing_task=None) -> bool:
+        prompt = prompt.strip()
         if not prompt or self._busy or self._shutting_down:
-            return
+            return False
         refresh_local_date()
         self._provider_status_timer.stop()
         self._autoclear_timer.stop()
@@ -731,6 +753,18 @@ class ZyloDeskletWindow(QWidget):
         initial_dir = os.getenv("STEP_DESKLET_WORKING_DIR", os.path.expanduser("~"))
         conv_path = str(get_conversation_file())
         max_history_messages = get_memory_turns(self._settings) * 2
+        provider = provider if provider in enabled_providers(self._settings) else self._provider
+        history = None
+        if self.chat_store is not None:
+            if writing_task is not None:
+                source = f"writing:{writing_task}"
+            chat, message = self.chat_store.begin(prompt, provider, source, chat_id=chat_id)
+            self._chat_turn = (chat, message, provider, source)
+            history = self.chat_store.history(chat, max_history_messages)
+            if chat != self._file_match_chat:
+                self._file_matches = ()
+            conv_path = None
+            self.chat_changed.emit()
         worker_options = {
             "initial_working_dir": initial_dir,
             "conversation_path": conv_path,
@@ -741,12 +775,13 @@ class ZyloDeskletWindow(QWidget):
         request = DeskletRequest(self)
         self._request = request
         request.status.connect(self._on_worker_status)
+        request.preview.connect(self.chat_preview.emit)
         request.outcome.connect(self._on_request_outcome)
         file_matches, self._file_matches = self._file_matches, ()
         request.start_request({
             "prompt": prompt,
             "file_matches": file_matches,
-            "provider": self._provider,
+            "provider": provider,
             "options": worker_options,
             "base_url": (
                 os.getenv("LMSTUDIO_BASE_URL")
@@ -754,7 +789,21 @@ class ZyloDeskletWindow(QWidget):
                 or DEFAULT_LMSTUDIO_BASE_URL
             ),
             "model": os.getenv("LMSTUDIO_MODEL") or self._settings.get("lmstudioModel") or "",
+            **({"writing_task": writing_task} if writing_task is not None else {}),
+            **({"history": history, "preview": True} if history is not None else {}),
         })
+        return True
+
+    def _finish_chat(self, text: str, state: str = "done") -> None:
+        turn, self._chat_turn = self._chat_turn, None
+        if turn is None:
+            return
+        chat, message, provider, source = turn
+        context, self._context_answer = self._context_answer, None
+        self.chat_store.finish(chat, message, text, context or text, provider, state)
+        self.chat_changed.emit()
+        if state == "done":
+            self.chat_finished.emit(source, text)
 
     def _on_request_outcome(self, event: str, value: str) -> None:
         if self._request is None or self.sender() is not self._request:
@@ -762,6 +811,8 @@ class ZyloDeskletWindow(QWidget):
         request, self._request = self._request, None
         if event == "response":
             self._file_matches = request.file_matches
+            self._file_match_chat = self._chat_turn[0] if self._chat_turn else None
+            self._context_answer = request.context_answer
             self._on_worker_response(value)
         elif event == "admin_tool":
             self._on_admin_tool_requested(value)
@@ -771,6 +822,7 @@ class ZyloDeskletWindow(QWidget):
             self._finish_worker_error(value)
 
     def _on_worker_status(self, text: str) -> None:
+        self.chat_status.emit(text)
         if self._shutting_down:
             return
         self.status_label.setText(text)
@@ -779,12 +831,22 @@ class ZyloDeskletWindow(QWidget):
 
     def _on_worker_response(self, text: str) -> None:
         self._set_busy(False)
+        self._finish_chat(text)
         if self._shutting_down:
             return
         self.prompt_input.setEnabled(True)
         self.send_btn.setEnabled(True)
         self.status_label.hide()
-        self.response_label.setText(text)
+        from html import escape
+        from step_desklet.win11.chat_window import markdown_html
+
+        formatted = escape(text).replace("\n", "<br>")
+        inline_markdown = "*" in text or "\x60" in text
+        if inline_markdown or ("|" in text and "\n" in text):
+            rich_text = markdown_html(text)
+            if inline_markdown or "<table " in rich_text:
+                formatted = rich_text
+        self.response_label.setText(formatted)
         self.response_label.show()
         self._fit_height()
 
@@ -842,6 +904,7 @@ class ZyloDeskletWindow(QWidget):
 
     def _on_worker_cancelled(self) -> None:
         self._set_busy(False)
+        self._finish_chat("", "cancelled")
         if self._shutting_down:
             return
         self.prompt_input.setEnabled(True)
@@ -854,12 +917,15 @@ class ZyloDeskletWindow(QWidget):
 
     def _finish_worker_error(self, error_text: str) -> None:
         self._set_busy(False)
+        self._finish_chat(error_text, "error")
         if self._shutting_down:
             return
         self.prompt_input.setEnabled(True)
         self.send_btn.setEnabled(True)
         self.status_label.hide()
-        self.response_label.setText(f"Error: {error_text}")
+        from html import escape
+
+        self.response_label.setText(escape(f"Error: {error_text}"))
         self.response_label.show()
         self._fit_height()
         self.prompt_input.setFocus()

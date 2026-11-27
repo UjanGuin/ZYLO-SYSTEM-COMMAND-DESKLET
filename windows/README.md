@@ -1,76 +1,44 @@
-# ZYLO Desklet for Windows
+# liNi for Windows
 
-[Download ZYLO-DESKLET.exe](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/download/windows-v2.5/ZYLO-DESKLET.exe)
-
-[Windows v2.5 release notes](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/tag/windows-v2.5)
-
-Windows v2.5 packages ZYLO 2.5.0 for Windows 11 x64. ZYLO is a desktop panel for asking questions and running everyday PowerShell tasks.
+[Download liNi 2.8](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/windows/downloads/liNi-Setup-Windows-x64.exe) · [Release notes](RELEASE-NOTES.md)
 
 ## Install or upgrade
 
-1. Install [64-bit Python 3.11 or newer](https://www.python.org/downloads/windows/).
-2. If ZYLO is running, quit it from the system tray.
-3. Run `ZYLO-DESKLET.exe` and click **Install**. First-time dependency installation requires an internet connection. The installer reuses compatible ZYLO dependencies when available.
-4. Open **ZYLO Desktop Assistant** from Start. The setup window lets you enter your name, choose a provider, and configure its connection. Existing settings are kept during an upgrade.
+1. Install [64-bit Python 3.11 or newer](https://www.python.org/downloads/windows/) on Windows 11 x64.
+2. Quit the running desklet using its tray menu.
+3. Open liNi-Setup-Windows-x64.exe and click **Install**. First-time dependency installation requires internet access. The installer is unsigned.
+4. Search the Start menu for **liNi Desktop Assistant** or **liNi Chats**.
 
-| Provider | Setup |
-| --- | --- |
-| NVIDIA NIM | Enter an NVIDIA API key for hosted Nemotron 3.5 Super completions. |
-| Groq | Enter a Groq API key for hosted completions. |
-| LM Studio | Start LM Studio's local server and set its base URL and model. The default endpoint is `http://127.0.0.1:1234/v1`. |
+Upgrades carry forward your settings, API keys, conversations, skills, and voice downloads. Existing profiles live under %APPDATA%\ZYLO and model files under %LOCALAPPDATA%\ZYLO\models.
 
-Add optional backup keys for NVIDIA and Groq. NVIDIA switches on a rate limit or request timeout. Groq retries on the active key for waits under 4 seconds and tries the backup for longer waits. NVIDIA retries HTTP 502 once on the current key. Groq retries rejected JSON generation once. Each prompt starts with its primary key.
+## Providers
 
-A Tavily key is optional for web search. A blank API key field keeps the saved value. ZYLO stores settings and credentials locally under `%APPDATA%\ZYLO`. Keep the `step-desklet.env` file private.
+NVIDIA NIM and Groq are hosted providers. Add an API key for each provider you use. Each accepts one optional backup key. NVIDIA switches on rate limits or timeouts and retries HTTP 502 once when eligible. Groq waits on the current key for retry delays below four seconds and tries the backup for longer delays when available.
 
-## ZYLO for Windows v2.5
+LM Studio and FreeLLMAPI can be enabled separately. LM Studio uses the default endpoint http://127.0.0.1:1234/v1. FreeLLMAPI uses the unified key, Auto or Fast routing, and http://127.0.0.1:31415/v1. Add a Tavily key for optional web search.
 
-- Settings save immediately. Pasted keys receive a background validation check, and a verified Groq key starts the app-list build when app filtering is enabled.
-- Exact Windows output volume commands are supported, including phrased requests such as "Set volume to 70%".
-- Conversation history rolls forward and keeps the configured number of complete exchanges.
-- ZYLO includes installed-app and file lookup, visible-window checks before app launches, alternate launchers, and a Gemini browser fallback.
-- Short Groq rate limits are handled with automatic retries.
+## Desklet and Chats
 
-## Use the desklet
+- Use the tray to show or hide the desklet, open Settings, or quit. Press Win+D to show the desktop. Unlock the desklet to move or resize it.
+- The circular arrow cancels the active request and clears the panel. The gradient glow moves during work.
+- **Settings → Appearance** has the **Editor's Choice** preset, custom gradients, and the Chats bubble color.
+- **Settings → General** sets how many recent exchanges the assistant carries into its context. **liNi Chats** also keeps a local archive and supports search, formatted text, equations, and writing tools.
+- Use **Assistant preferences** for custom instructions and optional weather coordinates. The assistant receives the PC's local time when building context.
 
-- Enter a prompt to ask a question or request a workstation action. The rim glows while ZYLO is working and stops moving when idle.
-- Unlock the panel to move or resize it. Use the system tray to show or hide it, reopen settings, or quit.
-- Press **Win+D** to show the desktop. The desklet returns when the wallpaper is exposed. Switching apps from the taskbar keeps it behind open windows.
-- Open **Settings** from the tray or Start. **General** adjusts the 4–30 turn memory slider. **Providers** manages credentials. **Appearance** previews your colors, and **System** manages startup and approved tools.
-- The circular-arrow button cancels the current request, stops its active command processes, and clears the panel.
-- **Manage skills** under **System** lists PowerShell skills, lets you disable or approve them, and shows recent executions. Review a custom skill before trusting it.
+## Voice
 
-### Administrator tools
+Open **Settings → Voice** and download the recognition model. New installs use Whisper Small. Existing downloaded Moonshine models work as a fallback. Hold the configured shortcut while speaking and release to send. Change or disable the shortcut in Settings. Test your microphone and speaker there.
 
-**Allow requests for Windows administrator tools** is off by default. When enabled, ZYLO can ask to open Device Manager, Disk Management, Event Viewer, Services, Task Manager, or Windows Features. Approve the request in ZYLO, then respond to Windows User Account Control if prompted. Ordinary PowerShell requests run with ZYLO's current user privileges. ZYLO can make changes through those commands, so check the scope of the task you request.
+Windows speech is the default for spoken replies. The Windows default output uses native speech. You can select a device or download the optional Pocket TTS model in Voice settings. Spoken replies are for voice input and can be turned off.
 
-## Build from source
+## Workstation tools
 
-From this directory in PowerShell, create an environment and install the pinned test dependencies.
+Ask for an installed application, a file by name, a volume percentage, or another supported task. liNi keeps an installed-app list that can be rebuilt from Settings, detects standard Windows user folders, and suggests similar filenames for confirmation. Search depth is configurable per folder.
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt -c requirements-lock.txt
-.\.venv\Scripts\python.exe -m unittest -v tests.test_desklet_ui tests.test_win32_prototypes tests.test_skills_security tests.test_worker_outcomes_and_shutdown
-.\.venv\Scripts\python.exe zylo_win11.py
-```
+Use the Skills manager to review enabled scripts, trust hashes, and execution history. Administrator tools require approval in liNi and can trigger Windows UAC.
 
-Build the per-user installer with the .NET Framework C# compiler included with Windows.
+## Build
 
-```powershell
-.\packaging\Build-WindowsInstaller.ps1 -Python .\.venv\Scripts\python.exe
-```
+From the windows directory, run .\packaging\Build-WindowsInstaller.ps1 in PowerShell. The build uses the Windows x64 .NET Framework C# compiler and writes dist\liNi-Setup-Windows-x64.exe. See requirements-dev.txt for development dependencies and tests for offline checks.
 
-The installer is written to `dist\ZYLO-DESKLET.exe`. The packaged Python entry point is `zylo_win11.py`. The desktop window and tray live in `step_desklet/win11/`, the request worker and settings live in `step_desklet/core/`, and the setup dialog lives in `setup_app.py`.
-
-The Windows x64 installer passed a smoke test and all 42 automated tests. Provider errors and administrator approvals were tested with simulated responses.
-
-## License
-
-[MIT](../LICENSE)
-
-## FreeLLMAPI and provider visibility
-
-Start FreeLLMAPI on this PC. In **Setup → Providers**, enable FreeLLMAPI, paste its unified API key, and choose Auto or Fast. ZYLO connects to `http://127.0.0.1:31415/v1`. Use the separate switches to hide LM Studio or FreeLLMAPI from the desklet and tray. NVIDIA NIM and Groq always remain available.
-
-Search depth is configurable per Windows folder under **Setup → System → File search depth**. Enter 0 for Unlimited. Videos defaults to level 6.
+The bundled equation renderer is MathJax. Local voice options include Whisper, Moonshine, and Pocket TTS. The downloads page and the application verify the published installer and model checksums respectively.
