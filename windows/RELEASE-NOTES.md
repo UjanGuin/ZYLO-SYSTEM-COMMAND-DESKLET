@@ -6,4 +6,4 @@
 
 Install on Windows 11 x64 with 64-bit Python 3.11 or newer. Quit the running desklet before upgrading. The upgrade carries over your settings, chats, skills, and voice models.
 
-[Windows setup guide](README.md) · [Public simulator](https://zylo-desklet.inspiringcondor1.chatgpt.site/) · [Installer checksum](downloads/SHA256SUMS.txt)
+[Windows setup guide](README.md) · [Public simulator](https://lini.inspiringcondor1.chatgpt.site/) · [Installer checksum](downloads/SHA256SUMS.txt)
