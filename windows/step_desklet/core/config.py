@@ -303,8 +303,6 @@ def validate_settings_config(raw: Any) -> Dict[str, Any]:
             "shortcut": str(voice.get("shortcut") or "Meta+Space")[:80],
             "review": parse_bool(voice.get("review"), False),
             "spokenReplies": parse_bool(voice.get("spokenReplies"), True),
-            "ttsEngine": "pocket" if voice.get("ttsEngine") == "pocket" and voice.get("ttsEngineExplicit") is True else "windows",
-            "ttsEngineExplicit": voice.get("ttsEngineExplicit") is True,
             "microphone": str(voice.get("microphone") or "")[:1024],
             "speaker": str(voice.get("speaker") or "")[:1024],
         },

@@ -93,21 +93,20 @@ TAVILY_API_KEY_URL = "https://app.tavily.com/home"
 LMSTUDIO_DOCS_URL = "https://lmstudio.ai/docs/app/api"
 
 CHECKBOX_STYLE = """
-    QCheckBox { spacing: 10px; }
+    QCheckBox { spacing: 9px; padding: 3px 0; }
     QCheckBox::indicator {
-        width: 16px; height: 16px; border: 1px solid #656a85;
-        border-radius: 5px; background: #141621;
+        width: 14px; height: 14px; border: 1px solid #77738d;
+        border-radius: 4px; background: #1a1a26;
     }
-    QCheckBox::indicator:hover, QCheckBox::indicator:focus { border-color: #ccbcff; }
+    QCheckBox::indicator:hover { background: #242436; border-color: #a69abf; }
     QCheckBox::indicator:checked {
-        background: #bcabff; border-color: #bcabff;
+        background: #4d396f; border-color: #ac93e7;
         image: url("@CHECKMARK@");
     }
-    QCheckBox::indicator:checked:hover, QCheckBox::indicator:checked:focus {
-        background: #d2c5ff; border-color: #eee6ff;
-    }
+    QCheckBox::indicator:checked:hover { background: #604781; border-color: #c2abf8; }
+    QCheckBox::indicator:focus, QCheckBox::indicator:checked:focus { border-color: #eee2ff; }
     QCheckBox::indicator:disabled { background: #191b27; border-color: #40445a; }
-    QCheckBox::indicator:checked:disabled { background: #726688; border-color: #726688; }
+    QCheckBox::indicator:checked:disabled { background: #322844; border-color: #675778; }
 """.replace("@CHECKMARK@", (Path(__file__).parent / "step_desklet/win11/assets/checkmark.svg").as_posix())
 
 SETTINGS_STYLE = """
@@ -704,7 +703,7 @@ class SetupDialog(QDialog):
     def _voice_cards(self, current, voice):
         from PyQt6.QtGui import QKeySequence
         from step_desklet.win11.voice import VoiceController
-        from step_desklet.win11.voice_models import ASSETS, STT, TTS, VoiceDownloads, models_root
+        from step_desklet.win11.voice_models import STT, VoiceDownloads, models_root
 
         settings = current["voice"]
         self._voice_controller = voice
@@ -721,11 +720,6 @@ class SetupDialog(QDialog):
         self.voice_review.setChecked(settings["review"])
         self.voice_spoken = QCheckBox("Read replies aloud for voice messages")
         self.voice_spoken.setChecked(settings["spokenReplies"])
-        self.voice_tts = SettingsComboBox()
-        self.voice_tts.addItem("Windows speech", "windows")
-        self.voice_tts.addItem("Pocket TTS (experimental)", "pocket")
-        self.voice_tts.setCurrentIndex(self.voice_tts.findData(settings["ttsEngine"]))
-        self.voice_tts.setToolTip("Windows speech plays through the default output directly. Save changes to enable Pocket TTS.")
         self.voice_mic = SettingsComboBox()
         self.voice_speaker = SettingsComboBox()
         for combo, devices, key in (
@@ -752,7 +746,7 @@ class SetupDialog(QDialog):
             voice.test_level.connect(meter.setValue)
             test_mic.clicked.connect(lambda: voice.test_microphone(self.voice_mic.currentData()))
             test_speaker.clicked.connect(
-                lambda: voice.test_speaker(self.voice_speaker.currentData(), self.voice_tts.currentData()),
+                lambda: voice.test_speaker(self.voice_speaker.currentData()),
             )
             self.finished.connect(voice.stop_microphone_test)
         input_form = self._studio_form()
@@ -765,23 +759,20 @@ class SetupDialog(QDialog):
         input_form.addRow(self.voice_review)
         output_form = self._studio_form()
         output_form.addRow(self.voice_spoken)
-        output_form.addRow("Speech engine", self.voice_tts)
         output_form.addRow("Output device", self.voice_speaker)
         output_form.addRow(test_speaker)
 
         downloads = VoiceDownloads.for_app()
         model_form = self._studio_form()
-        bars = {}
-        for folder, filename, *_ in ASSETS:
-            label = {STT: "Whisper Small Q8 · 270 MB", TTS: "Pocket TTS · 110 MB"}.get(filename, "Speech output runtime")
-            bar = QProgressBar()
-            bar.setFormat("Saved" if (models_root() / folder / filename).is_file() else "Not downloaded")
-            bar.setValue(100 if (models_root() / folder / filename).is_file() else 0)
-            bars[filename] = bar
-            model_form.addRow(label, bar)
-        download = QPushButton("Download voice models")
+        model = models_root() / "stt" / STT
+        bar = QProgressBar()
+        saved = model.is_file()
+        bar.setFormat("Saved" if saved else "Not downloaded")
+        bar.setValue(100 if saved else 0)
+        model_form.addRow("Whisper Small Q8 (270 MB)", bar)
+        download = QPushButton("Download Whisper")
         cancel = QPushButton("Cancel download")
-        remove = QPushButton("Remove models")
+        remove = QPushButton("Remove Whisper")
         download.setEnabled(not downloads.running)
         cancel.setEnabled(downloads.running)
         model_status = self._muted("Downloading…" if downloads.running else "")
@@ -790,31 +781,30 @@ class SetupDialog(QDialog):
             download.setEnabled(False)
             cancel.setEnabled(True)
             model_status.setText("Downloading missing voice files…")
-            downloads.start(include_pocket=self.voice_tts.currentData() == "pocket")
+            downloads.start()
 
         def remove_models():
             if downloads.running or (voice and voice.settings.get("enabled")):
-                model_status.setText("Stop the download or turn Voice Mode off and save before removing models.")
+                model_status.setText("Stop the download or turn Voice Mode off and save before removing Whisper.")
                 return
-            if QMessageBox.question(self, "Remove voice models", "Remove both downloaded speech models from this PC?") != QMessageBox.StandardButton.Yes:
+            if QMessageBox.question(self, "Remove Whisper", "Remove the downloaded Whisper model from this PC?") != QMessageBox.StandardButton.Yes:
                 return
             try:
-                for subfolder, filename in (("stt", STT), ("tts", TTS)):
-                    (models_root() / subfolder / filename).unlink(missing_ok=True)
-                    bars[filename].setValue(0)
-                    bars[filename].setFormat("Not downloaded")
+                model.unlink(missing_ok=True)
+                bar.setValue(0)
+                bar.setFormat("Not downloaded")
             except OSError:
                 model_status.setText("A voice model is still in use. Close liNi before removing it.")
                 return
-            model_status.setText("Voice models removed.")
+            model_status.setText("Whisper removed.")
 
-        def progress(name, percent):
-            bars[name].setFormat("Verified" if percent == 100 else "%p%")
-            bars[name].setValue(percent)
+        def progress(_name, percent):
+            bar.setFormat("Verified" if percent == 100 else "%p%")
+            bar.setValue(percent)
 
         def finished(ok, message):
             model_status.setText(message)
-            download.setText("Verify voice models" if ok else "Retry download")
+            download.setText("Verify Whisper" if ok else "Retry download")
             download.setEnabled(True)
             cancel.setEnabled(False)
 
@@ -832,7 +822,7 @@ class SetupDialog(QDialog):
         return [
             self._studio_card("Push to talk", input_form),
             self._studio_card("Spoken replies", output_form),
-            self._studio_card("Voice models", model_form, "One download sets up local transcription and English speech."),
+            self._studio_card("Speech recognition", model_form, "Whisper transcribes voice input on this PC."),
         ]
 
     @staticmethod
@@ -1396,8 +1386,6 @@ class SetupDialog(QDialog):
                 or DEFAULT_SHORTCUT,
                 "review": self.voice_review.isChecked(),
                 "spokenReplies": self.voice_spoken.isChecked(),
-                "ttsEngine": self.voice_tts.currentData(),
-                "ttsEngineExplicit": True,
                 "microphone": self.voice_mic.currentData(),
                 "speaker": self.voice_speaker.currentData(),
             }
@@ -1497,8 +1485,10 @@ class SkillManagerDialog(QDialog):
         else:
             for skill in skills.values():
                 card = QWidget()
+                card.setObjectName("SkillCard")
                 card.setStyleSheet(
-                    "background: rgba(255,255,255,10); border: 1px solid rgba(255,255,255,28); border-radius: 8px;"
+                    "QWidget#SkillCard { background: rgba(255,255,255,10); "
+                    "border: 1px solid rgba(255,255,255,28); border-radius: 8px; }"
                 )
                 card_layout = QVBoxLayout(card)
                 card_layout.setContentsMargins(10, 8, 10, 8)

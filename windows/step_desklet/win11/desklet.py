@@ -15,7 +15,6 @@ from PyQt6.QtGui import (
     QMouseEvent,
     QPainter,
     QPainterPath,
-    QPalette,
     QPen,
     QPixmap,
 )
@@ -311,8 +310,8 @@ class ZyloDeskletWindow(QWidget):
 
         self.clear_btn = QPushButton(self.card)
         self.clear_btn.setObjectName("ZyloIconButton")
-        self.clear_btn.setToolTip("Stop work and clear response")
-        self.clear_btn.setAccessibleName("Stop work and clear response")
+        self.clear_btn.setToolTip("Stop work, stop speech, and clear response")
+        self.clear_btn.setAccessibleName("Stop work, stop speech, and clear response")
         self.clear_btn.setIconSize(QSize(16, 16))
         self.clear_btn.setFixedSize(28, 26)
         self.clear_btn.clicked.connect(self.clear_all)
@@ -504,6 +503,7 @@ class ZyloDeskletWindow(QWidget):
             }}
             QLineEdit#ZyloInput {{
                 color: #f7fbff;
+                placeholder-text-color: #aabbd5;
                 background: transparent;
                 border: none;
                 font-size: 12.5px;
@@ -522,9 +522,6 @@ class ZyloDeskletWindow(QWidget):
             }}
             """
         )
-        palette = self.prompt_input.palette()
-        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#97a9c3"))
-        self.prompt_input.setPalette(palette)
 
     def _available_screen_rect(self, point: Optional[QPoint] = None):
         if point is not None:
@@ -721,7 +718,11 @@ class ZyloDeskletWindow(QWidget):
             self._fit_height()
 
     def submit_prompt(self) -> None:
-        self.submit_text(self.prompt_input.text(), "desklet")
+        prompt = self.prompt_input.text().strip()
+        if not prompt:
+            self.prompt_input.clear()
+            return
+        self.submit_text(prompt, "desklet")
 
     def submit_text(self, prompt: str, source: str = "chat", provider: str | None = None,
                     *, chat_id=ACTIVE_CHAT, writing_task=None) -> bool:

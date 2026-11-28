@@ -1,6 +1,6 @@
 # liNi for Windows
 
-[Download liNi 3.0](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/windows/downloads/liNi-Setup-Windows-x64.exe) · [Release notes](RELEASE-NOTES.md)
+[Download liNi 3.1](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/windows/downloads/liNi-Setup-Windows-x64.exe) · [Release notes](RELEASE-NOTES.md)
 
 ## Install or upgrade
 
@@ -9,7 +9,7 @@
 3. Open liNi-Setup-Windows-x64.exe and click **Install**. First-time dependency installation requires internet access. The installer is unsigned.
 4. Search the Start menu for **liNi Desktop Assistant** or **liNi Chats**.
 
-Upgrades carry forward your settings, API keys, conversations, skills, and voice downloads. Existing profiles live under %APPDATA%\ZYLO and model files under %LOCALAPPDATA%\ZYLO\models.
+Upgrades carry forward your settings, API keys, conversations, skills, and any downloaded Whisper model. Existing profiles live under %APPDATA%\ZYLO and model files under %LOCALAPPDATA%\ZYLO\models.
 
 ## Providers
 
@@ -27,9 +27,9 @@ LM Studio and FreeLLMAPI can be enabled separately. LM Studio uses the default e
 
 ## Voice
 
-Open **Settings → Voice** and download the recognition model. New installs use Whisper Small. Existing downloaded Moonshine models work as a fallback. Hold the configured shortcut while speaking and release to send. Change or disable the shortcut in Settings. Test your microphone and speaker there.
+Open **Settings → Voice** and download Whisper Small (about 270 MB). Hold the configured shortcut while speaking and release to send. Change or disable the shortcut in Settings. Test your microphone and speaker there.
 
-Windows speech is the default for spoken replies. The Windows default output uses native speech. You can select a device or download the optional Pocket TTS model in Voice settings. Spoken replies are for voice input and can be turned off.
+Spoken replies use Windows speech. Select an output device in Voice settings or use the Windows default. Click the reset icon on the desklet to stop playback and discard queued speech. Spoken replies are for voice input and can be turned off.
 
 ## Workstation tools
 
@@ -41,4 +41,4 @@ Use the Skills manager to review enabled scripts, trust hashes, and execution hi
 
 From the windows directory, run .\packaging\Build-WindowsInstaller.ps1 in PowerShell. The build uses the Windows x64 .NET Framework C# compiler and writes dist\liNi-Setup-Windows-x64.exe. See requirements-dev.txt for development dependencies and tests for offline checks.
 
-The bundled equation renderer is MathJax. Local voice options include Whisper, Moonshine, and Pocket TTS. The downloads page publishes the installer checksum. liNi verifies voice model downloads before using them.
+The bundled equation renderer is MathJax. The downloads page publishes the installer checksum. liNi verifies voice model downloads before using them.

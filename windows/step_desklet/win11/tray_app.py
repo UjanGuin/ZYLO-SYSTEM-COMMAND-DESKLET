@@ -72,6 +72,7 @@ class ZyloWin11Controller:
         from step_desklet.win11.voice import VoiceController
 
         self.voice = VoiceController(app, self.desklet.submit_text, self.open_setup, lambda: self.desklet._busy)
+        self.desklet.clear_btn.clicked.connect(self.voice.stop_speaking)
         self.desklet.chat_finished.connect(self.voice.speak)
         self._chats_window = None
         self.desklet.request_chats.connect(self.open_chats)

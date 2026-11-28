@@ -14,8 +14,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("liNi Desktop Assistant Setup")]
 [assembly: AssemblyProduct("liNi Desktop Assistant")]
-[assembly: AssemblyVersion("3.0.0.0")]
-[assembly: AssemblyFileVersion("3.0.0.0")]
+[assembly: AssemblyVersion("3.1.0.0")]
+[assembly: AssemblyFileVersion("3.1.0.0")]
 
 internal sealed class ZyloSetup : Form
 {
@@ -46,7 +46,7 @@ internal sealed class ZyloSetup : Form
 
     private ZyloSetup()
     {
-        Text = "liNi 3.0 Setup";
+        Text = "liNi 3.1 Setup";
         Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(520, 390);
@@ -58,7 +58,7 @@ internal sealed class ZyloSetup : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.Controls.Add(new Label { Text = "Install liNi 3.0 · Voice and Chats", AutoSize = true, Font = new Font("Segoe UI", 17, FontStyle.Bold) }, 0, 0);
+        layout.Controls.Add(new Label { Text = "Install liNi 3.1 · Voice and Chats", AutoSize = true, Font = new Font("Segoe UI", 17, FontStyle.Bold) }, 0, 0);
         layout.Controls.Add(new Label {
             Text = "Adds liNi Chats to Windows Search and Voice to Settings. Quit the running desklet from its tray icon before installing.",
             AutoSize = true, MaximumSize = new Size(510, 0), Margin = new Padding(3, 8, 3, 12)
@@ -107,7 +107,7 @@ internal sealed class ZyloSetup : Form
         {
             CreateShortcut(appPath, Environment.GetFolderPath(Environment.SpecialFolder.Programs));
             CreateShortcut(appPath, Environment.GetFolderPath(Environment.SpecialFolder.Programs), true);
-            status.Text = "liNi 3.0 installed. Search Windows for liNi Chats.";
+            status.Text = "liNi 3.1 installed. Search Windows for liNi Chats.";
         }
         catch (Exception ex)
         {
@@ -190,7 +190,8 @@ internal sealed class ZyloSetup : Form
     {
         string command = "from step_desklet.core.config import refresh_local_date; " +
             "from step_desklet.core.skills import ensure_skills_directory; " +
-            "ensure_skills_directory(); refresh_local_date()";
+            "from step_desklet.win11.voice_models import models_root, remove_retired_models; " +
+            "ensure_skills_directory(); refresh_local_date(); remove_retired_models(models_root())";
         if (Run(runtime, "-E -s -B -c " + Quote(command), appPath, log) != 0)
             log("liNi will refresh the bundled skills and local date when it starts.");
     }
@@ -333,15 +334,34 @@ internal sealed class ZyloSetup : Form
         Directory.CreateDirectory(programs);
         var start = LaunchInfo(appPath);
         dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell", true));
-        string shortcutPath = Path.Combine(programs, chats ? "liNi Chats.lnk" : "liNi Desktop Assistant.lnk");
-        dynamic shortcut = shell.CreateShortcut(shortcutPath);
-        shortcut.TargetPath = start.FileName;
-        shortcut.Arguments = start.Arguments + (chats ? " --chats" : "");
-        shortcut.WorkingDirectory = start.WorkingDirectory;
-        shortcut.Description = chats ? "Open liNi Chats" : "Open liNi Desktop Assistant";
-        shortcut.IconLocation = start.FileName + ",0";
-        shortcut.Save();
-        SetShortcutAppId(shortcutPath, chats ? AppUserModelId + ".Chats" : AppUserModelId);
+        string label = chats ? "Chats" : "Desktop Assistant";
+        string basePath = Path.GetDirectoryName(appPath);
+        foreach (string brand in new[] { "liNi", "ZYLO" })
+        {
+            string shortcutPath = Path.Combine(programs, brand + " " + label + ".lnk");
+            bool legacy = brand == "ZYLO";
+            if (legacy && !File.Exists(shortcutPath)) continue;
+            dynamic shortcut = shell.CreateShortcut(shortcutPath);
+            if (legacy && !IsManagedLauncher((string)shortcut.TargetPath, basePath)) continue;
+            shortcut.TargetPath = start.FileName;
+            shortcut.Arguments = chats ? " --chats" : "";
+            shortcut.WorkingDirectory = start.WorkingDirectory;
+            shortcut.Description = "Open liNi " + label;
+            shortcut.IconLocation = start.FileName + ",0";
+            shortcut.Save();
+            SetShortcutAppId(shortcutPath, chats ? AppUserModelId + ".Chats" : AppUserModelId);
+        }
+    }
+
+    private static bool IsManagedLauncher(string target, string basePath)
+    {
+        if (String.IsNullOrEmpty(target) || !Path.IsPathRooted(target) ||
+            !String.Equals(Path.GetFileName(target), "ZYLO.exe", StringComparison.OrdinalIgnoreCase))
+            return false;
+        string folder = Path.GetDirectoryName(Path.GetFullPath(target));
+        return String.Equals(folder, basePath, StringComparison.OrdinalIgnoreCase) ||
+            (Path.GetFileName(folder).StartsWith("app-", StringComparison.OrdinalIgnoreCase) &&
+             String.Equals(Path.GetDirectoryName(folder), basePath, StringComparison.OrdinalIgnoreCase));
     }
 
     private static void SetShortcutAppId(string shortcutPath, string appId)

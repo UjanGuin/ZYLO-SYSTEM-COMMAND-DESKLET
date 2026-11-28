@@ -2,28 +2,20 @@
 
 import base64
 import ctypes
-import io
 import os
 import queue
 import re
-import secrets
-import socket
 import subprocess
 import threading
-import time
-import wave
 from array import array
 from ctypes import wintypes
 
-import requests
 from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QObject, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QKeySequence
 from PyQt6.QtMultimedia import QAudio, QAudioFormat, QAudioOutput, QAudioSource, QMediaDevices, QMediaPlayer
 from PyQt6.QtWidgets import QDialog, QLabel, QInputDialog, QProgressBar, QPushButton, QVBoxLayout
 
-from step_desklet.win11.voice_models import (
-    ASSETS, LEGACY_STT, STT, TTS, VOICE_PRESET, VoiceDownloads, engine_location, file_hash, install_models, models_root,
-)
+from step_desklet.win11.voice_models import ASSETS, STT, VoiceDownloads, file_hash, models_root
 
 
 DEFAULT_SHORTCUT = "Meta+Space"
@@ -113,30 +105,6 @@ def speech_chunks(text):
         yield text[:end].strip()
         text = text[end:].lstrip()
         limit = SPEECH_CHUNK
-
-
-def audible_pocket_audio(payload):
-    with wave.open(io.BytesIO(payload), "rb") as source:
-        if source.getsampwidth() != 2:
-            raise ValueError("Pocket TTS returned an unsupported sample format.")
-        samples = array("h", source.readframes(source.getnframes()))
-        params = source.getparams()
-
-    if not samples:
-        raise ValueError("Pocket TTS returned no audio samples.")
-    rms = (sum(sample * sample for sample in samples) / len(samples)) ** 0.5
-    if rms < 256:
-        raise ValueError("Pocket TTS returned audio too quiet to play.")
-    peak = max(map(abs, samples))
-    gain = min(3.0, 3277 / rms, 31000 / peak)
-    if gain <= 1.0:
-        return payload
-    boosted = array("h", (round(sample * gain) for sample in samples))
-    output = io.BytesIO()
-    with wave.open(output, "wb") as destination:
-        destination.setparams(params)
-        destination.writeframes(boosted.tobytes())
-    return output.getvalue()
 
 
 class PcmConverter:
@@ -247,20 +215,12 @@ class VoiceController(QObject):
         self._peak = 0.0
         self._model_ready = False
         self._stt_error = ""
-        self._tts_ready = False
         self._warm_stt = False
-        self._warm_tts = False
         self._closed = False
         self._asr = None
-        self._asr_name = ""
         self._session = None
-        self._stream = None
         self._batch_pcm = array("f")
         self._refresh_recognizer = False
-        self._tts_process = None
-        self._tts_address = None
-        self._tts_token = None
-        self._tts_lock = threading.Lock()
         self._stop = threading.Event()
         self._jobs = queue.Queue()
         self._tts_jobs = queue.Queue()
@@ -294,13 +254,9 @@ class VoiceController(QObject):
             self.cancel()
             self._hotkey_jobs.put("")
             self._hotkey_result = "Voice mode is off."
-            self._model_ready = self._tts_ready = False
+            self._model_ready = False
             self._jobs.put((self._unload_stt, "stt_closed", 0))
-            self._stop_tts_server()
         else:
-            if self.settings.get("ttsEngine") != "pocket":
-                self._tts_ready = False
-                self._stop_tts_server()
             if not self.settings.get("globalShortcut", True):
                 self._hotkey_jobs.put("")
                 self._hotkey_result = "Global shortcut is off."
@@ -369,19 +325,10 @@ class VoiceController(QObject):
                 self._refresh_recognizer = True
 
     def _warm_models(self):
-        root = models_root()
-        available = next((name for name in (STT, LEGACY_STT[1]) if (root / "stt" / name).is_file()), "")
-        if available and not self._warm_stt and (not self._model_ready or available != self._asr_name):
+        if (models_root() / "stt" / STT).is_file() and not (self._model_ready or self._warm_stt):
             self._warm_stt = True
             self._stt_error = ""
             self._jobs.put((self._load_stt, "stt_ready", 0))
-        if (self.settings.get("ttsEngine") == "pocket" and (root / "tts" / TTS).is_file()
-                and engine_location(root) and not (self._tts_ready or self._warm_tts)):
-            self._warm_tts = True
-            threading.Thread(
-                target=self._run_job, args=(self._start_tts_server, "tts_ready", 0),
-                daemon=True, name="liNi speech warmup",
-            ).start()
 
     def _run_jobs(self, jobs):
         while True:
@@ -399,80 +346,44 @@ class VoiceController(QObject):
             if not self._stop.is_set():
                 self.voice_event.emit("error:" + label, ident, str(error))
 
-    @staticmethod
-    def _checked_model(index):
-        folder, name, _, sha, _ = ASSETS[index] if isinstance(index, int) else index
-        file = models_root() / folder / name
-        if file_hash(file) != sha:
-            raise ValueError("Model verification failed. Download the voice models again in Setup.")
-        return file
-
     def _load_stt(self):
         from transcribe_cpp import Model
 
-        error = None
-        for asset in (ASSETS[0], LEGACY_STT):
-            if not (models_root() / asset[0] / asset[1]).is_file():
-                continue
-            if self._asr is not None and self._asr_name == asset[1]:
-                return self._asr_name
-            try:
-                model = self._checked_model(asset)
-                try:
-                    replacement = Model(model)
-                except (OSError, RuntimeError):
-                    replacement = Model(model, backend="cpu")
-            except (OSError, RuntimeError, ValueError) as failure:
-                error = failure
-                continue
-            self._unload_stt()
-            self._asr = replacement
-            self._asr_name = asset[1]
-            return self._asr_name
         if self._asr is not None:
-            return self._asr_name
-        raise RuntimeError(str(error) if error else "Download the recognition model in Voice settings.")
+            return
+        folder, name, _, checksum, _ = ASSETS[0]
+        model = models_root() / folder / name
+        if file_hash(model) != checksum:
+            raise ValueError("Model verification failed. Download Whisper again in Voice settings.")
+        try:
+            self._asr = Model(model)
+        except (OSError, RuntimeError):
+            self._asr = Model(model, backend="cpu")
 
     def _unload_stt(self):
         self._close_stream()
-        if self._asr:
+        if self._asr is not None:
             self._asr.close()
             self._asr = None
-        self._asr_name = ""
 
     def _close_stream(self):
-        stream, self._stream = self._stream, None
         session, self._session = self._session, None
         self._batch_pcm = array("f")
-        try:
-            if stream is not None:
-                stream.reset()
-        finally:
-            if session is not None:
-                session.close()
+        if session is not None:
+            session.close()
 
     def _begin_stream(self):
         self._close_stream()
         self._session = self._asr.session()
-        if self._asr_name != STT:
-            self._stream = self._session.stream()
 
     def _feed_stream(self, pcm):
-        if self._stream is not None:
-            self._stream.feed(pcm)
-            preview = self._stream.text()
-            return preview.display.strip()
         if self._session is not None:
             self._batch_pcm.extend(pcm)
-        return ""
 
     def _finish_stream(self):
         try:
-            if self._stream is not None:
-                self._stream.finalize()
-                return self._stream.snapshot().text.strip()
             if self._session is not None and self._batch_pcm:
-                return self._session.run(self._batch_pcm, language="auto").text.strip()
+                return self._session.run(self._batch_pcm).text.strip()
             return ""
         finally:
             self._close_stream()
@@ -563,7 +474,7 @@ class VoiceController(QObject):
     def _queue_pcm(self):
         chunk, self._pcm_pending = self._pcm_pending, array("f")
         if chunk:
-            self._jobs.put((lambda: self._feed_stream(chunk), "partial", self._capture_id))
+            self._jobs.put((lambda: self._feed_stream(chunk), "", self._capture_id))
 
     def _poll_release(self):
         down = self.user32.GetAsyncKeyState
@@ -643,21 +554,10 @@ class VoiceController(QObject):
             self._warm_stt = False
             self._model_ready = label == "stt_ready" and self.settings.get("enabled", False)
             if self._model_ready:
-                model = "Whisper Small" if data == STT else "Moonshine (download Whisper Small to upgrade)"
-                self.status.emit(f"{model} ready. " + self._hotkey_result)
+                self.status.emit("Whisper Small ready. " + self._hotkey_result)
             elif label.startswith("error:"):
                 self._stt_error = "Speech recognition could not start: " + str(data)
                 self.status.emit(self._stt_error)
-        elif label in ("tts_ready", "error:tts_ready"):
-            self._warm_tts = False
-            self._tts_ready = (
-                label == "tts_ready" and bool(data)
-                and self.settings.get("enabled", False) and self.settings.get("ttsEngine") == "pocket"
-            )
-            if self._tts_ready:
-                self.status.emit("Spoken reply model ready. " + self._hotkey_result)
-            elif label.startswith("error:") and self.settings.get("ttsEngine") == "pocket":
-                self.status.emit("Using Windows speech while Pocket TTS is unavailable.")
         elif label == "audio" and ident == self._speaking_id:
             self._audio_queue.append(data)
             if self.player.playbackState() == QMediaPlayer.PlaybackState.StoppedState and self._buffer is None:
@@ -674,9 +574,7 @@ class VoiceController(QObject):
             if self._state == "idle":
                 self._notice("Spoken reply unavailable", str(data), transient=True)
         elif ident == self._capture_id:
-            if label == "partial" and self._state != "idle" and data:
-                self.transcript.setText(str(data)[-420:])
-            elif label == "transcript" and self._state == "finalizing":
+            if label == "transcript" and self._state == "finalizing":
                 self._state = "idle"
                 self.overlay.hide()
                 self._refresh_stt_after_capture()
@@ -697,78 +595,14 @@ class VoiceController(QObject):
                 self.status.emit("Transcription failed: " + detail)
                 self._notice("Transcription failed", detail[:260], transient=True)
 
-    @staticmethod
-    def _local_session():
-        session = requests.Session()
-        session.trust_env = False
-        return session
-
-    def _start_tts_server(self):
-        root = models_root()
-        engine = engine_location(root)
-        if not engine or self._stop.is_set():
-            return False
-        model = self._checked_model(1)
-        if not install_models(root, lambda *_: None, self._stop, assets=(VOICE_PRESET,)):
-            return False
-        voice = root / VOICE_PRESET[0] / VOICE_PRESET[1]
-        with socket.socket() as address:
-            address.bind(("127.0.0.1", 0))
-            port = address.getsockname()[1]
-        host = f"http://127.0.0.1:{port}"
-        token = secrets.token_urlsafe(32)
-        env = {**os.environ, "CRISPASR_API_KEYS": token}
-        for key in tuple(env):
-            if key.endswith(("_API_KEY", "_BACKUP_API_KEY")):
-                env.pop(key)
-        with self._tts_lock:
-            if self._stop.is_set() or not self.settings.get("enabled") or self.settings.get("ttsEngine") != "pocket":
-                return False
-            if self._tts_process and self._tts_process.poll() is None:
-                return bool(self._tts_address)
-            process = subprocess.Popen(
-                [str(engine), "--server", "--backend", "pocket-tts", "-m", str(model),
-                 "--voice", str(voice), "--host", "127.0.0.1", "--port", str(port), "--ws-port", "-1", "--no-gpu"],
-                cwd=engine.parent, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            self._tts_process = process
-        try:
-            with self._local_session() as session:
-                for _ in range(100):
-                    if process.poll() is not None or self._stop.wait(0.15):
-                        break
-                    try:
-                        with session.get(host + "/health", timeout=0.7, allow_redirects=False,
-                                         headers={"Authorization": "Bearer " + token}) as response:
-                            if response.ok and response.json().get("backend") == "pocket-tts":
-                                with self._tts_lock:
-                                    if self._tts_process is not process or self._stop.is_set():
-                                        return False
-                                    self._tts_address, self._tts_token = host, token
-                                return True
-                    except (requests.RequestException, ValueError):
-                        pass
-            raise RuntimeError("The local Pocket TTS engine did not start.")
-        except Exception:
-            self._stop_tts_server()
-            raise
-
-    def _stop_tts_server(self):
-        with self._tts_lock:
-            process, self._tts_process = self._tts_process, None
-            self._tts_address = self._tts_token = None
-            if process and process.poll() is None:
-                process.terminate()
-
     def speak(self, source, text):
         if source == "voice" and self.settings.get("spokenReplies"):
             self._speak(text, self.settings.get("speaker", ""))
 
-    def test_speaker(self, device, engine=None):
-        self._speak("Hello. This is liNi's spoken reply test.", device, engine=engine)
+    def test_speaker(self, device):
+        self._speak("Hello. This is liNi's spoken reply test.", device)
 
-    def _speak(self, text, device_key, *, engine=None):
+    def _speak(self, text, device_key):
         device = self._device(device_key, output=True)
         if device_key and (device is None or device.isNull()):
             self.status.emit("Saved speaker unavailable. Using the Windows default.")
@@ -780,18 +614,14 @@ class VoiceController(QObject):
         text = re.sub(r"[*#_]", "", text)
         text = " ".join(text.split())
         if text:
-            engine = engine or self.settings.get("ttsEngine", "windows")
-            if engine == "pocket" and not self._tts_ready:
-                self.status.emit("Pocket TTS is unavailable. Using Windows speech.")
-                engine = "windows"
-            if device is None or device.isNull() or (engine == "windows" and device.isDefault()):
+            if device is None or device.isNull() or device.isDefault():
                 self._speak_on_windows_default(text)
                 return
             self.status.emit("Preparing spoken reply.")
             self.output.setDevice(device)
             self._pending_audio_text = text
             ident = self._speaking_id
-            self._tts_jobs.put((lambda: self._synthesize(text, ident, engine=engine), "audio_done", ident))
+            self._tts_jobs.put((lambda: self._synthesize(text, ident), "audio_done", ident))
 
     def _speak_on_windows_default(self, text):
         self.status.emit("Speaking on the Windows default output.")
@@ -823,35 +653,17 @@ class VoiceController(QObject):
                 if self._native_voice is process:
                     self._native_voice = None
 
-    def _synthesize(self, text, ident, *, engine="windows"):
-        with self._tts_lock:
-            source, token = (self._tts_address, self._tts_token) if engine == "pocket" else (None, None)
-        chunks = speech_chunks(text)
-        with self._local_session() as session:
-            for index, chunk in enumerate(chunks):
-                if ident != self._speaking_id or self._stop.is_set():
-                    return
-                try:
-                    audio = None
-                    if source and token:
-                        try:
-                            with session.post(source + "/v1/audio/speech",
-                                              headers={"Authorization": "Bearer " + token},
-                                              json={"input": chunk, "response_format": "wav"},
-                                              timeout=(2, 12 if index == 0 else 16), allow_redirects=False) as reply:
-                                reply.raise_for_status()
-                                audio = audible_pocket_audio(reply.content)
-                        except (requests.RequestException, ValueError, wave.Error, EOFError):
-                            source = None
-                    if ident != self._speaking_id or self._stop.is_set():
-                        return
-                    if audio is None:
-                        audio = self._windows_speech(chunk)
-                    if ident == self._speaking_id:
-                        self.voice_event.emit("audio", ident, audio)
-                except (OSError, ValueError, subprocess.SubprocessError):
-                    self.voice_event.emit("error:audio", ident, "")
-                    return
+    def _synthesize(self, text, ident):
+        for chunk in speech_chunks(text):
+            if ident != self._speaking_id or self._stop.is_set():
+                return
+            try:
+                audio = self._windows_speech(chunk)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                self.voice_event.emit("error:audio", ident, "")
+                return
+            if ident == self._speaking_id:
+                self.voice_event.emit("audio", ident, audio)
 
     @staticmethod
     def _windows_speech_command(script):
@@ -914,11 +726,11 @@ class VoiceController(QObject):
                 except OSError:
                     pass
         self._audio_queue.clear()
+        buffer, self._buffer = self._buffer, None
         self.player.stop()
         self.player.setSource(QUrl())
-        if self._buffer:
-            self._buffer.deleteLater()
-        self._buffer = None
+        if buffer:
+            buffer.deleteLater()
 
     def shutdown(self):
         self._closed = True
@@ -928,4 +740,3 @@ class VoiceController(QObject):
         self._jobs.put((self._unload_stt, "", 0))
         self._jobs.put(None)
         self._tts_jobs.put(None)
-        self._stop_tts_server()

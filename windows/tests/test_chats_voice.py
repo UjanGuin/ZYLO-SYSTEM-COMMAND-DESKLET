@@ -1,13 +1,10 @@
 """Offline checks of chat continuity and Voice Mode integration."""
 
 import hashlib
-import io
 import os
 import sys
 import threading
 import unittest
-import wave
-from array import array
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -93,9 +90,7 @@ class VoiceAndChatsTests(unittest.TestCase):
                 self.assertEqual(setup.values()["weatherLocation"], "23.7, 87.7")
                 setup.chat_bubble_color = "#406b60"
                 self.assertEqual(setup.values()["chatBubbleColor"], "#406b60")
-                self.assertEqual(setup.values()["voice"]["ttsEngine"], "windows")
-                setup.voice_tts.setCurrentIndex(setup.voice_tts.findData("pocket"))
-                self.assertEqual(setup.values()["voice"]["ttsEngine"], "pocket")
+                self.assertTrue(setup.values()["voice"]["spokenReplies"])
                 chats = ChatsWindow(desklet, voice)
                 chats.show()
                 self.app.processEvents()
@@ -115,7 +110,7 @@ class VoiceAndChatsTests(unittest.TestCase):
                 voice.shutdown()
                 desklet.close()
 
-    def test_release_submits_the_final_text_and_resets_the_stream_for_next_hold(self):
+    def test_release_submits_the_final_text_and_resets_the_session_for_next_hold(self):
         from types import SimpleNamespace
 
         from PyQt6.QtTest import QTest
@@ -130,10 +125,9 @@ class VoiceAndChatsTests(unittest.TestCase):
         voice._asr = Mock()
         sessions = []
         for text in ("First recording", "Second recording"):
-            stream = Mock(spec=["feed", "text", "finalize", "snapshot", "reset"])
-            stream.text.return_value = SimpleNamespace(display=text)
-            stream.snapshot.return_value = SimpleNamespace(text=text)
-            sessions.append(Mock(spec=["stream", "close"], **{"stream.return_value": stream}))
+            session = Mock(spec=["run", "close"])
+            session.run.return_value = SimpleNamespace(text=text)
+            sessions.append(session)
         voice._asr.session.side_effect = sessions
         with patch.object(voice, "_start_audio", return_value=True):
             for count, session in enumerate(sessions, 1):
@@ -147,13 +141,12 @@ class VoiceAndChatsTests(unittest.TestCase):
                     if callback.called:
                         break
                     QTest.qWait(10)
-                stream = session.stream.return_value
-                stream.finalize.assert_called_once()
-                stream.reset.assert_called_once()
+                session.run.assert_called_once()
+                self.assertEqual(len(session.run.call_args.args[0]), 1)
                 session.close.assert_called_once()
-                callback.assert_called_once_with(stream.snapshot.return_value.text, "voice")
+                callback.assert_called_once_with(session.run.return_value.text, "voice")
 
-    def test_voice_reply_uses_windows_speech_when_pocket_tts_is_unavailable(self):
+    def test_selected_speaker_uses_windows_speech_audio(self):
         from step_desklet.win11.voice import VoiceController
 
         voice = VoiceController(self.app, Mock(), lambda: None, lambda: False)
@@ -165,7 +158,7 @@ class VoiceAndChatsTests(unittest.TestCase):
         ):
             voice.voice_event.disconnect()
             voice.voice_event.connect(event)
-            voice._synthesize("A spoken reply", voice._speaking_id, engine="pocket")
+            voice._synthesize("A spoken reply", voice._speaking_id)
             synthesize.assert_called_once_with("A spoken reply")
             event.assert_called_once_with("audio", voice._speaking_id, audio)
 
@@ -175,7 +168,7 @@ class VoiceAndChatsTests(unittest.TestCase):
         from PyQt6.QtTest import QTest
 
         from step_desklet.win11.voice import VoiceController
-        from step_desklet.win11.voice_models import ASSETS, STT
+        from step_desklet.win11.voice_models import ASSETS
 
         self.assertLess(ASSETS[0][-1], 370_000_000)
         submit = Mock(return_value=True)
@@ -183,7 +176,6 @@ class VoiceAndChatsTests(unittest.TestCase):
         self.addCleanup(voice.shutdown)
         voice.settings = {"enabled": True}
         voice._model_ready = True
-        voice._asr_name = STT
         asr_session = Mock(spec=["close", "run"])
         asr_session.run.return_value = SimpleNamespace(text="Whisper recognized this.")
         voice._asr = Mock()
@@ -200,7 +192,7 @@ class VoiceAndChatsTests(unittest.TestCase):
                 QTest.qWait(10)
         asr_session.run.assert_called_once()
         self.assertEqual(len(asr_session.run.call_args.args[0]), 16000)
-        self.assertEqual(asr_session.run.call_args.kwargs["language"], "auto")
+        self.assertNotIn("language", asr_session.run.call_args.kwargs)
         submit.assert_called_once_with("Whisper recognized this.", "voice")
 
     def test_upgrade_and_missing_speaker_route_voice_to_windows(self):
@@ -211,9 +203,7 @@ class VoiceAndChatsTests(unittest.TestCase):
         self.addCleanup(voice.shutdown)
         legacy = {"enabled": True, "spokenReplies": True, "speaker": "stale", "ttsEngine": "pocket"}
         voice.settings = validate_settings_config({"voice": legacy})["voice"]
-        self.assertEqual(voice.settings["ttsEngine"], "windows")
-        current = validate_settings_config({"voice": {**legacy, "ttsEngineExplicit": True}})
-        self.assertEqual(current["voice"]["ttsEngine"], "pocket")
+        self.assertNotIn("ttsEngine", voice.settings)
         default = Mock()
         default.isNull.return_value = False
         default.isDefault.return_value = True
@@ -235,25 +225,45 @@ class VoiceAndChatsTests(unittest.TestCase):
         self.assertEqual(" ".join(chunks), text.strip())
         self.assertTrue(all(0 < len(chunk) <= 160 for chunk in chunks))
 
-    def test_pocket_audio_boosts_quiet_speech_and_rejects_silence(self):
-        from step_desklet.win11.voice import audible_pocket_audio
+    def test_cleanup_removes_only_retired_voice_downloads(self):
+        from step_desklet.win11.voice_models import STT, remove_retired_models
 
-        def wav(samples):
-            output = io.BytesIO()
-            with wave.open(output, "wb") as speech:
-                speech.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
-                speech.writeframes(samples.tobytes())
-            return output.getvalue()
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            retired = root / "tts" / "pocket-tts-english-novc-q8_0.gguf"
+            older = root / "stt" / "moonshine-streaming-small-Q8_0.gguf"
+            whisper = root / "stt" / STT
+            custom = root / "tts" / "personal-model.gguf"
+            for file in (retired, older, whisper, custom):
+                file.parent.mkdir(exist_ok=True)
+                file.touch()
+            remove_retired_models(root)
+            remove_retired_models(root)
+            self.assertFalse(retired.exists())
+            self.assertFalse(older.exists())
+            self.assertTrue(whisper.exists())
+            self.assertTrue(custom.exists())
 
-        quiet = array("h", [-300, 400, 600, -800] * 4000)
-        with wave.open(io.BytesIO(audible_pocket_audio(wav(quiet))), "rb") as speech:
-            boosted = array("h", speech.readframes(speech.getnframes()))
-            self.assertEqual(speech.getframerate(), 24000)
-        self.assertEqual(len(boosted), len(quiet))
-        self.assertGreater(max(map(abs, boosted)), 2000)
-        self.assertLessEqual(max(map(abs, boosted)), 31000)
-        with self.assertRaisesRegex(ValueError, "too quiet"):
-            audible_pocket_audio(wav(array("h", [0] * 2000)))
+    def test_desklet_reset_stops_playback_and_discards_queued_audio(self):
+        from step_desklet.win11.tray_app import ZyloWin11Controller
+
+        profile = self.enterContext(TemporaryDirectory())
+        self.enterContext(patch.dict(os.environ, {"APPDATA": profile, "LOCALAPPDATA": profile}))
+        controller = ZyloWin11Controller(self.app)
+        self.addCleanup(controller.shutdown_cleanup)
+        voice = controller.voice
+        process = Mock()
+        process.poll.return_value = None
+        voice._native_voice = process
+        voice._audio_queue.append(b"queued")
+        previous = voice._speaking_id
+        with patch.object(voice.player, "stop") as stop:
+            controller.desklet.clear_btn.click()
+            stop.assert_called_once()
+        process.kill.assert_called_once()
+        voice._on_event("audio", previous, b"late")
+        self.assertEqual(voice._audio_queue, [])
+        self.assertIsNone(voice._native_voice)
 
     def test_markdown_tables_render_as_tables_in_chats_and_the_desklet(self):
         from PyQt6.QtGui import QTextDocument, QTextTable

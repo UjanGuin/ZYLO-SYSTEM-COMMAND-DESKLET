@@ -220,6 +220,22 @@ class DeskletUiTests(unittest.TestCase):
         self.assertTrue(self.desklet.message_area.isHidden())
         self._assert_prompt_bottom_spacing()
 
+    def test_empty_prompt_keeps_a_visible_placeholder(self):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QColor, QPalette
+        from PyQt6.QtTest import QTest
+
+        field = self.desklet.prompt_input
+        field.setText("   ")
+        QTest.keyClick(field, Qt.Key.Key_Return)
+        self.assertEqual(field.text(), "")
+        self.assertEqual(field.placeholderText(), "Ask liNi")
+        for state in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive, QPalette.ColorGroup.Disabled):
+            self.assertEqual(field.palette().color(state, QPalette.ColorRole.PlaceholderText), QColor("#aabbd5"))
+        with_placeholder = field.grab().toImage()
+        field.setPlaceholderText("")
+        self.assertNotEqual(with_placeholder, field.grab().toImage())
+
     def test_prompt_outline_keeps_its_end_colors_at_fractional_scaling(self):
         from math import ceil
 

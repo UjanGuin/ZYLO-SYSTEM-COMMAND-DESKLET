@@ -13,10 +13,10 @@ liNi is a desktop assistant by Ujan Guin. The Windows 11 app brings AI chat, voi
 
 ## Windows 11 x64
 
-- [Download the liNi 3.0 installer](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/windows/downloads/liNi-Setup-Windows-x64.exe)
-- [liNi 3.0 on GitHub Releases](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/tag/windows-v3.0)
+- [Download the liNi 3.1 installer](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/windows/downloads/liNi-Setup-Windows-x64.exe)
+- [liNi 3.1 on GitHub Releases](https://github.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/releases/tag/windows-v3.1)
 - [Windows setup and build guide](windows/README.md)
-- [Windows 3.0 release notes](windows/RELEASE-NOTES.md)
+- [Windows 3.1 release notes](windows/RELEASE-NOTES.md)
 - [Installer SHA-256 checksum](windows/downloads/SHA256SUMS.txt)
 
 On Windows, liNi supports NVIDIA NIM, Groq, LM Studio, and FreeLLMAPI. Use local conversation memory, push-to-talk voice, and a history of past chats. Trusted skills help find and open apps and files, check Git, and control volume. Appearance settings include dynamic gradients and the Editor's Choice preset.
