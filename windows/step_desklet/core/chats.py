@@ -150,9 +150,13 @@ class ChatStore:
                 db.execute("INSERT INTO messages(chat, role, text, context, provider, state) "
                            "VALUES (?, 'assistant', ?, ?, ?, ?)", (chat, answer, context, provider, state))
 
-    def rename(self, chat, title):
+    def rename(self, chat, title, *, expected=None, first_message=None):
         with self._db() as db:
-            db.execute("UPDATE chats SET title=? WHERE id=?", (title.strip()[:120], chat))
+            return db.execute(
+                """UPDATE chats SET title=? WHERE id=? AND (? IS NULL OR title=?)
+                AND (? IS NULL OR ?=(SELECT MIN(id) FROM messages WHERE chat=chats.id))""",
+                (title.strip()[:120], chat, expected, expected, first_message, first_message),
+            ).rowcount != 0
 
     def delete(self, chat):
         with self._db() as db:

@@ -1,6 +1,6 @@
 # liNi for Windows
 
-[Download liNi 3.1](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/windows/downloads/liNi-Setup-Windows-x64.exe) · [Release notes](RELEASE-NOTES.md)
+[Download liNi 4.0](https://raw.githubusercontent.com/UjanGuin/ZYLO-SYSTEM-COMMAND-DESKLET/main/windows/downloads/liNi-Setup-Windows-x64.exe) · [Release notes](RELEASE-NOTES.md)
 
 ## Install or upgrade
 
@@ -22,14 +22,14 @@ LM Studio and FreeLLMAPI can be enabled separately. LM Studio uses the default e
 - Use the tray to show or hide the desklet, open Settings, or quit. Press Win+D to show the desktop. Unlock the desklet to move or resize it.
 - The circular arrow cancels the active request and clears the panel. The gradient glow moves during work.
 - **Settings → Appearance** has the **Editor's Choice** preset, custom gradients, and the Chats bubble color.
-- **Settings → General** sets how many recent exchanges the assistant carries into its context. **liNi Chats** also keeps a local archive and supports search, formatted text, equations, and writing tools.
+- **Settings → General** sets how many recent exchanges the assistant carries into its context. **liNi Chats** also keeps a local archive and supports search, formatted text, equations, and writing tools. Replies stream as they arrive. Use the sidebar button to show or hide the floating conversation list. For new chats, the selected model suggests a title after the first reply.
 - Use **Assistant preferences** for custom instructions and optional weather coordinates. The assistant receives the PC's local time when building context.
 
 ## Voice
 
 Open **Settings → Voice** and download Whisper Small (about 270 MB). Hold the configured shortcut while speaking and release to send. Change or disable the shortcut in Settings. Test your microphone and speaker there.
 
-Spoken replies use Windows speech. Select an output device in Voice settings or use the Windows default. Click the reset icon on the desklet to stop playback and discard queued speech. Spoken replies are for voice input and can be turned off.
+Spoken replies use Windows speech. Select an output device in Voice settings or use the Windows default. Desklet replies stay visible while they are read aloud. Click the reset icon on the desklet to stop playback and discard queued speech. Spoken replies are for voice input and can be turned off.
 
 ## Workstation tools
 

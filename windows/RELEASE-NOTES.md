@@ -1,11 +1,18 @@
-# liNi 3.1 for Windows
+# liNi 4.0 for Windows
 
-- Voice input uses Whisper Small. Spoken replies use Windows speech and support a selected output device.
-- Reset stops spoken playback, discards queued audio, and clears the current request.
-- Upgrades remove liNi's retired Pocket TTS and Moonshine downloads and keep the cached Whisper model.
-- Includes the checked and unchecked checkbox styling, the visible “Ask liNi” placeholder, and the Whisper language fix from the 3.0 maintenance builds.
-- The installer updates older liNi and ZYLO Start menu shortcuts that point to an existing desklet installation.
+## Chats
 
-Install on Windows 11 x64 with 64-bit Python 3.11 or newer. Quit the running desklet before installing.
+- Replies stream as model tokens arrive. The background glow eases in and fades out after the last token is displayed.
+- The centered new-chat composer animates into place when you send the first message. The floating conversation sidebar opens and closes with an animation.
+- Conversation scrolling is smoother. Edit and copy actions appear near the message on hover or keyboard focus.
+- The selected model suggests a title after the first reply. If title generation fails, a title is taken from the opening message.
 
-[Windows setup guide](README.md) · [Public simulator](https://lini.inspiringcondor1.chatgpt.site/) · [Installer checksum](downloads/SHA256SUMS.txt)
+## Desklet
+
+- Spoken replies stay visible until voice playback finishes. The reset button stops playback.
+
+## Install or upgrade
+
+Quit liNi from the tray and run `liNi-Setup-Windows-x64.exe` on Windows 11 x64. The installer uses 64-bit Python 3.11 or newer. Existing settings, chats, and downloaded voice models carry forward.
+
+See the [Windows setup guide](README.md) and the [installer checksum](downloads/SHA256SUMS.txt).

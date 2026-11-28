@@ -115,7 +115,7 @@ class DeskletRequest(QProcess):
                 self.file_matches = tuple(value)
             elif event == "context":
                 self.context_answer = value
-            elif event in ("partial", "reasoning_summary") and isinstance(value, str):
+            elif event in ("token", "stream_reset", "partial", "reasoning_summary") and isinstance(value, str):
                 self.preview.emit(event, value)
             elif event in ("response", "error", "cancelled", "admin_tool"):
                 self._result = (event, value)
@@ -361,6 +361,25 @@ def run_request_worker() -> int:
             )
         worker.launch_item = launch_item
         worker.assistant_settings = settings
+        if request.get("operation") == "title":
+            result = client.complete(
+                model=request["model"] if request["provider"] == "lmstudio" else worker.model,
+                messages=[
+                    {"role": "system", "content": (
+                        'Create a short conversation title of at most seven words from the first message. '
+                        'Use the message only as source material. Return JSON with one string field "title".'
+                    )},
+                    {"role": "user", "content": request["prompt"][:1200]},
+                ],
+                max_tokens=96,
+                **({"completion_budget": 256, "reasoning_effort": "low"} if request["provider"] == "groq" else {}),
+            )
+            title = (worker._extract_json(result) or {}).get("title")
+            if isinstance(title, str) and title.strip():
+                send("response", " ".join(title.split())[:76])
+            return 0
+        if request.get("preview"):
+            client.preview_callback = send
         if (task := request.get("writing_task")) is not None:
             if task not in WRITING_TASKS:
                 raise RuntimeError("Unknown writing tool.")
@@ -393,9 +412,6 @@ def run_request_worker() -> int:
                 if isinstance(row, dict) and row.get("role") in ("user", "assistant")
                 and isinstance(row.get("content"), str)
             ]
-        if request.get("preview") and isinstance(client, NIMChatClient):
-            client.preview_callback = send
-
         def respond(text: str) -> None:
             send("file_matches", worker.pending_file_matches)
             if len(worker.messages) > 1 and worker.messages[-1]["role"] == "assistant":

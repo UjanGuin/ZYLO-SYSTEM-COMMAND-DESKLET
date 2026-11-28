@@ -145,6 +145,7 @@ class VoiceController(QObject):
     voice_event = pyqtSignal(str, int, object)
     status = pyqtSignal(str)
     test_level = pyqtSignal(int)
+    spoken_reply_changed = pyqtSignal(bool)
 
     def __init__(self, app, submit, open_settings, busy):
         super().__init__(app)
@@ -202,6 +203,8 @@ class VoiceController(QObject):
         self._native_voice = None
         self._native_lock = threading.Lock()
         self._pending_audio_text = ""
+        self._audio_synthesizing = False
+        self._speaking_reply = False
         self._play_start_timer = QTimer(self)
         self._play_start_timer.setSingleShot(True)
         self._play_start_timer.timeout.connect(lambda: self._play_error(None, "The output device did not start playing."))
@@ -562,14 +565,21 @@ class VoiceController(QObject):
             self._audio_queue.append(data)
             if self.player.playbackState() == QMediaPlayer.PlaybackState.StoppedState and self._buffer is None:
                 self._play_next()
-        elif label == "error:audio" and ident == self._speaking_id:
+        elif label == "audio_done" and ident == self._speaking_id:
+            self._audio_synthesizing = False
+            self._finish_audio_if_idle()
+        elif label in ("error:audio", "error:audio_done") and ident == self._speaking_id:
             text = self._pending_audio_text
-            self.stop_speaking()
             if text:
+                self._reset_speech_output()
                 self._speak_on_windows_default(text)
+            else:
+                self.stop_speaking()
         elif label == "native_done" and ident == self._speaking_id:
+            self._set_speaking_reply(False)
             self.status.emit("Spoken reply finished.")
         elif label == "error:native_done" and ident == self._speaking_id:
+            self._set_speaking_reply(False)
             self.status.emit(str(data))
             if self._state == "idle":
                 self._notice("Spoken reply unavailable", str(data), transient=True)
@@ -597,12 +607,12 @@ class VoiceController(QObject):
 
     def speak(self, source, text):
         if source == "voice" and self.settings.get("spokenReplies"):
-            self._speak(text, self.settings.get("speaker", ""))
+            self._speak(text, self.settings.get("speaker", ""), reply=True)
 
     def test_speaker(self, device):
         self._speak("Hello. This is liNi's spoken reply test.", device)
 
-    def _speak(self, text, device_key):
+    def _speak(self, text, device_key, *, reply=False):
         device = self._device(device_key, output=True)
         if device_key and (device is None or device.isNull()):
             self.status.emit("Saved speaker unavailable. Using the Windows default.")
@@ -614,12 +624,14 @@ class VoiceController(QObject):
         text = re.sub(r"[*#_]", "", text)
         text = " ".join(text.split())
         if text:
+            self._set_speaking_reply(reply)
             if device is None or device.isNull() or device.isDefault():
                 self._speak_on_windows_default(text)
                 return
             self.status.emit("Preparing spoken reply.")
             self.output.setDevice(device)
             self._pending_audio_text = text
+            self._audio_synthesizing = True
             ident = self._speaking_id
             self._tts_jobs.put((lambda: self._synthesize(text, ident), "audio_done", ident))
 
@@ -697,6 +709,17 @@ class VoiceController(QObject):
             self._play_start_timer.start(6000)
             self.player.setSourceDevice(self._buffer, QUrl("voice.wav"))
             self.player.play()
+        self._finish_audio_if_idle()
+
+    def _finish_audio_if_idle(self):
+        if self._pending_audio_text and not (self._audio_synthesizing or self._buffer or self._audio_queue):
+            self._pending_audio_text = ""
+            self._set_speaking_reply(False)
+
+    def _set_speaking_reply(self, active):
+        if self._speaking_reply != active:
+            self._speaking_reply = active
+            self.spoken_reply_changed.emit(active)
 
     def _playback_state(self, state):
         if state == QMediaPlayer.PlaybackState.PlayingState:
@@ -706,17 +729,23 @@ class VoiceController(QObject):
         if not self._buffer:
             return
         text = self._pending_audio_text
-        self.stop_speaking()
         if text:
+            self._reset_speech_output()
             self._speak_on_windows_default(text)
             return
+        self.stop_speaking()
         self.status.emit("Could not play this spoken reply.")
         if self._state == "idle":
             self._notice("Speaker playback failed", detail or "Check the output device in Voice settings.", transient=True)
 
     def stop_speaking(self):
+        self._reset_speech_output()
+        self._set_speaking_reply(False)
+
+    def _reset_speech_output(self):
         self._speaking_id += 1
         self._pending_audio_text = ""
+        self._audio_synthesizing = False
         self._play_start_timer.stop()
         with self._native_lock:
             process, self._native_voice = self._native_voice, None

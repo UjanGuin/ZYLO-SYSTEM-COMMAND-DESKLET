@@ -216,6 +216,7 @@ class ZyloDeskletWindow(QWidget):
     chat_finished = pyqtSignal(str, str)
     provider_changed = pyqtSignal(str)
     lock_changed = pyqtSignal(bool)
+    theme_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -250,6 +251,8 @@ class ZyloDeskletWindow(QWidget):
         self._admin_prompt: Optional[QMessageBox] = None
         self._busy = False
         self._shutting_down = False
+        self._spoken_reply_active = False
+        self._spoken_reply_clear_delay = 0
 
         self._autoclear_timer = QTimer(self)
         self._autoclear_timer.setSingleShot(True)
@@ -522,6 +525,7 @@ class ZyloDeskletWindow(QWidget):
             }}
             """
         )
+        self.theme_changed.emit()
 
     def _available_screen_rect(self, point: Optional[QPoint] = None):
         if point is not None:
@@ -682,6 +686,7 @@ class ZyloDeskletWindow(QWidget):
 
     def clear_all(self) -> None:
         self._cancel_request()
+        self._spoken_reply_clear_delay = 0
         self._autoclear_timer.stop()
         self._provider_status_timer.stop()
         self.response_label.clear()
@@ -708,9 +713,18 @@ class ZyloDeskletWindow(QWidget):
             prompt.reject()
 
     def _clear_response_only(self) -> None:
+        if self._spoken_reply_clear_delay:
+            return
         self.response_label.clear()
         self.response_label.hide()
         self._fit_height()
+
+    def set_spoken_reply_active(self, active: bool) -> None:
+        self._spoken_reply_active = active
+        if not active:
+            delay, self._spoken_reply_clear_delay = self._spoken_reply_clear_delay, 0
+            if delay and not self._shutting_down:
+                self._autoclear_timer.start(delay)
 
     def _hide_status_banner(self) -> None:
         if not self._busy:
@@ -732,6 +746,7 @@ class ZyloDeskletWindow(QWidget):
         refresh_local_date()
         self._provider_status_timer.stop()
         self._autoclear_timer.stop()
+        self._spoken_reply_clear_delay = 0
 
         env_path = get_env_file()
         if env_path.exists():
@@ -782,18 +797,23 @@ class ZyloDeskletWindow(QWidget):
         request.start_request({
             "prompt": prompt,
             "file_matches": file_matches,
-            "provider": provider,
             "options": worker_options,
+            **self.provider_request_options(provider),
+            **({"writing_task": writing_task} if writing_task is not None else {}),
+            **({"history": history, "preview": source != "desklet"} if history is not None else {}),
+        })
+        return True
+
+    def provider_request_options(self, provider):
+        return {
+            "provider": provider,
             "base_url": (
                 os.getenv("LMSTUDIO_BASE_URL")
                 or self._settings.get("lmstudioBaseUrl")
                 or DEFAULT_LMSTUDIO_BASE_URL
             ),
             "model": os.getenv("LMSTUDIO_MODEL") or self._settings.get("lmstudioModel") or "",
-            **({"writing_task": writing_task} if writing_task is not None else {}),
-            **({"history": history, "preview": True} if history is not None else {}),
-        })
-        return True
+        }
 
     def _finish_chat(self, text: str, state: str = "done") -> None:
         turn, self._chat_turn = self._chat_turn, None
@@ -831,6 +851,7 @@ class ZyloDeskletWindow(QWidget):
         self._fit_height()
 
     def _on_worker_response(self, text: str) -> None:
+        spoken = self._chat_turn is not None and self._chat_turn[3] == "voice"
         self._set_busy(False)
         self._finish_chat(text)
         if self._shutting_down:
@@ -854,7 +875,10 @@ class ZyloDeskletWindow(QWidget):
         word_count = len(text.strip().split())
         delay_ms = max(6000, min(120000, 3500 + word_count * 220))
         if not self._file_matches:
-            self._autoclear_timer.start(delay_ms)
+            if spoken and self._spoken_reply_active:
+                self._spoken_reply_clear_delay = delay_ms
+            else:
+                self._autoclear_timer.start(delay_ms)
         self.prompt_input.setFocus()
 
     def _on_admin_tool_requested(self, tool_id: str) -> None:

@@ -232,7 +232,106 @@ def _content_text(content: Any) -> str:
     return ""
 
 
+FINAL_STREAM_PREFIX = re.compile(
+    r'^\s*(?:```(?:json)?\s*)?\{\s*"mode"\s*:\s*"final"\s*,\s*"message"\s*:\s*"'
+)
+STREAM_STRING_PART = re.compile(r'(?:[^"\\]|\\.)*')
+
+
+def _read_chat_stream(response, cancelled, provider, preview=None):
+    if preview:
+        preview("stream_reset", "")
+    chunks: List[str] = []
+    pending_text = None
+    preview_complete = False
+    finish_reason = None
+    done = False
+    try:
+        for line in response.iter_lines(chunk_size=128):
+            if cancelled.is_set():
+                raise OperationCancelledError("Operation cancelled.")
+            if not line:
+                continue
+            if isinstance(line, bytes):
+                line = line.decode("utf-8", errors="replace")
+            data = line[5:].strip() if line.startswith("data:") else line.strip()
+            if data == "[DONE]":
+                done = True
+                break
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("error"):
+                raise RuntimeError(f"{provider} returned an error during the answer stream.")
+            choices = event.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0]
+            finish_reason = choice.get("finish_reason") or finish_reason
+            delta = choice.get("delta") or {}
+            token = _content_text(delta.get("content"))
+            if token:
+                chunks.append(token)
+            if preview:
+                summary = delta.get("reasoning_summary")
+                if isinstance(summary, str) and summary.strip():
+                    preview("reasoning_summary", summary[:2000])
+                if token and not preview_complete:
+                    if pending_text is None:
+                        prefix = "".join(chunks)
+                        match = FINAL_STREAM_PREFIX.match(prefix)
+                        if not match:
+                            preview_complete = len(prefix) > 512
+                            continue
+                        pending_text = prefix[match.end():]
+                    else:
+                        pending_text += token
+                    part = STREAM_STRING_PART.match(pending_text)
+                    try:
+                        partial = json.loads('"' + part[0] + '"')
+                        # UTF-16 escapes can arrive in separate tokens.
+                        partial.encode("utf-8")
+                    except (ValueError, UnicodeError):
+                        continue
+                    pending_text = pending_text[part.end():]
+                    preview_complete = pending_text.startswith('"')
+                    if partial:
+                        preview("token", partial)
+    except requests.RequestException as exc:
+        if cancelled.is_set():
+            raise OperationCancelledError("Operation cancelled.") from exc
+        if isinstance(exc, requests.Timeout) or any(isinstance(arg, ReadTimeoutError) for arg in exc.args):
+            raise ProviderTimeoutError(f"{provider} answer stream timed out.") from exc
+        raise RuntimeError(f"{provider} stream interrupted: {exc}") from exc
+    finally:
+        response.close()
+
+    if cancelled.is_set():
+        raise OperationCancelledError("Operation cancelled.")
+    if finish_reason == "length":
+        raise RuntimeError(f"{provider} used its response limit before finishing the answer. Try a shorter request.")
+    if not done and not finish_reason:
+        raise RuntimeError(f"{provider} stream ended before the answer was complete.")
+    content = "".join(chunks).strip()
+    if not content:
+        raise RuntimeError(f"{provider} returned an empty response.")
+    return content
+
+
+def _stream_unsupported(response, error):
+    return response.status_code in (400, 422) and re.search(
+        r"stream.{0,55}(?:unsupported|not supported|not available)|"
+        r"(?:unsupported|not supported|not available).{0,55}stream",
+        str(error), re.IGNORECASE,
+    )
+
+
 class _CloudChatClient:
+    preview_callback = None
+
     def __init__(self, api_key: str, backup_api_key: str):
         self.api_key = api_key
         backup = backup_api_key.strip()
@@ -281,7 +380,7 @@ class NIMChatClient(_CloudChatClient):
             raise RuntimeError(
                 f"NVIDIA API key missing. Set NVIDIA_API_KEY or NIM_API_KEY in {ENV_HINT_PATH}."
             )
-        stream = model == DEFAULT_NIM_MODEL
+        stream = model == DEFAULT_NIM_MODEL or self.preview_callback is not None
         payload = {
             "messages": messages,
             "model": model,
@@ -292,14 +391,14 @@ class NIMChatClient(_CloudChatClient):
             "frequency_penalty": frequency_penalty,
             "presence_penalty": presence_penalty,
         }
-        if stream:
+        if model == DEFAULT_NIM_MODEL:
             payload.update(
                 temperature=1,
                 top_p=0.95,
-                max_tokens=16384,
+                max_tokens=16384 if max_tokens == 4096 else max_tokens,
                 parallel_tool_calls=True,
                 seed=42,
-                chat_template_kwargs={"enable_thinking": True},
+                chat_template_kwargs={"enable_thinking": max_tokens == 4096},
             )
             payload.pop("frequency_penalty")
             payload.pop("presence_penalty")
@@ -355,75 +454,7 @@ class NIMChatClient(_CloudChatClient):
             finally:
                 response.close()
 
-        chunks: List[str] = []
-        finish_reason = None
-        done = False
-        try:
-            for line in response.iter_lines():
-                if self._cancel_event.is_set():
-                    raise OperationCancelledError("Operation cancelled.")
-                if not line:
-                    continue
-                if isinstance(line, bytes):
-                    line = line.decode("utf-8", errors="replace")
-                data = line[5:].strip() if line.startswith("data:") else line.strip()
-                if data == "[DONE]":
-                    done = True
-                    break
-                try:
-                    event = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                if event.get("error"):
-                    raise RuntimeError("NVIDIA NIM returned an error during the answer stream.")
-                choices = event.get("choices") or []
-                if not choices:
-                    continue
-                choice = choices[0]
-                finish_reason = choice.get("finish_reason") or finish_reason
-                delta = choice.get("delta") or {}
-                chunks.append(_content_text(delta.get("content")))
-                preview = getattr(self, "preview_callback", None)
-                if preview:
-                    summary = delta.get("reasoning_summary")
-                    if isinstance(summary, str) and summary.strip():
-                        preview("reasoning_summary", summary[:2000])
-                    now = time.monotonic()
-                    if now - getattr(self, "_last_preview_at", 0) >= 0.08:
-                        self._last_preview_at = now
-                        prefix = re.match(
-                            r'^\s*\{\s*"mode"\s*:\s*"final"\s*,\s*"message"\s*:\s*"((?:[^"\\]|\\.)*)',
-                            "".join(chunks),
-                        )
-                        if prefix:
-                            try:
-                                partial = json.loads('"' + prefix[1] + '"')
-                            except ValueError:
-                                pass
-                            else:
-                                if partial:
-                                    preview("partial", partial)
-        except requests.RequestException as exc:
-            if self._cancel_event.is_set():
-                raise OperationCancelledError("Operation cancelled.") from exc
-            if isinstance(exc, requests.Timeout) or any(isinstance(arg, ReadTimeoutError) for arg in exc.args):
-                raise ProviderTimeoutError("NVIDIA NIM answer stream timed out.") from exc
-            raise RuntimeError(f"NVIDIA NIM stream interrupted: {exc}") from exc
-        finally:
-            response.close()
-
-        if self._cancel_event.is_set():
-            raise OperationCancelledError("Operation cancelled.")
-        if finish_reason == "length":
-            raise RuntimeError("NVIDIA NIM used its response limit before finishing the answer. Try a shorter request.")
-        if not done and not finish_reason:
-            raise RuntimeError("NVIDIA NIM stream ended before the answer was complete.")
-        content = "".join(chunks).strip()
-        if not content:
-            raise RuntimeError("NVIDIA NIM returned an empty response.")
-        return content
+        return _read_chat_stream(response, self._cancel_event, "NVIDIA NIM", self.preview_callback)
 
     @staticmethod
     def _extract_non_stream_content(payload: Dict[str, Any]) -> str:
@@ -461,6 +492,7 @@ class GroqChatClient(_CloudChatClient):
             raise RuntimeError(f"Groq API key missing. Set GROQ_API_KEY in {ENV_HINT_PATH}.")
         if self._cancel_event.is_set():
             raise OperationCancelledError("Operation cancelled.")
+        stream = self.preview_callback is not None
         payload = {
             "model": model or GROQ_MODEL,
             "messages": messages,
@@ -476,9 +508,11 @@ class GroqChatClient(_CloudChatClient):
             # trying to emit a built-in tool call instead of the action message.
             "tool_choice": "none",
             "response_format": {"type": "json_object"},
-            "stream": False,
+            "stream": stream,
             "stop": None,
         }
+        if stream:
+            payload.pop("response_format")
         rate_retries = 0
         waited = 0.0
         short_timeout_retried = False
@@ -487,11 +521,11 @@ class GroqChatClient(_CloudChatClient):
         while True:
             if self._cancel_event.is_set():
                 raise OperationCancelledError("Operation cancelled.")
-            headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"}
+            headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "text/event-stream" if stream else "application/json"}
             started = time.monotonic()
             try:
                 response = self._session.post(
-                    GROQ_API_URL, headers=headers, json=payload, stream=False, timeout=(10, 180)
+                    GROQ_API_URL, headers=headers, json=payload, stream=stream, timeout=(10, 180)
                 )
             except requests.Timeout as exc:
                 elapsed = time.monotonic() - started
@@ -511,6 +545,8 @@ class GroqChatClient(_CloudChatClient):
                 raise RuntimeError(f"Groq request failed: {exc}") from exc
 
             if response.ok:
+                if stream and "text/event-stream" in response.headers.get("Content-Type", "").lower():
+                    return _read_chat_stream(response, self._cancel_event, "Groq", self.preview_callback)
                 try:
                     choice = response.json()["choices"][0]
                     message = choice.get("message", {})
@@ -530,6 +566,10 @@ class GroqChatClient(_CloudChatClient):
                     error = _api_error(response, "Groq")
                 finally:
                     response.close()
+                if stream and _stream_unsupported(response, error):
+                    stream = payload["stream"] = False
+                    payload["response_format"] = {"type": "json_object"}
+                    continue
                 if isinstance(error, (ProviderRateLimitError, ProviderTimeoutError)):
                     wait = error.retry_after
                     if wait is None and isinstance(error, ProviderTimeoutError):
@@ -641,6 +681,8 @@ class LMStudioChatClient:
     provider_name = "LM Studio"
     allow_redirects = True
 
+    preview_callback = None
+
     def __init__(
         self,
         base_url: str = DEFAULT_LMSTUDIO_BASE_URL,
@@ -688,9 +730,10 @@ class LMStudioChatClient:
     ) -> str:
         if self._cancel_event.is_set():
             raise OperationCancelledError("Operation cancelled.")
+        stream = self.preview_callback is not None
         resolved_model = self._resolve_model(model)
         headers = {
-            "Accept": "application/json",
+            "Accept": "text/event-stream" if stream else "application/json",
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key or 'lm-studio'}",
         }
@@ -700,7 +743,7 @@ class LMStudioChatClient:
             "temperature": temperature,
             "top_p": top_p,
             "max_tokens": max_tokens,
-            "stream": False,
+            "stream": stream,
         }
         try:
             response = self._session.post(
@@ -709,6 +752,7 @@ class LMStudioChatClient:
                 json=payload,
                 timeout=(5, 240),
                 allow_redirects=self.allow_redirects,
+                **({"stream": True} if stream else {}),
             )
         except requests.RequestException as exc:
             if self._cancel_event.is_set():
@@ -721,6 +765,9 @@ class LMStudioChatClient:
             error = self._response_error(response)
             response.close()
             raise error
+
+        if stream and "text/event-stream" in response.headers.get("Content-Type", "").lower():
+            return _read_chat_stream(response, self._cancel_event, self.provider_name, self.preview_callback)
 
         try:
             with response:

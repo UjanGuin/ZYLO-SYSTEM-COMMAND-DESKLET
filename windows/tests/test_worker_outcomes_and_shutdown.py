@@ -9,7 +9,7 @@ import threading
 import time
 import unittest
 from copy import deepcopy
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -18,6 +18,7 @@ from tests.test_support import PROJECT_DIR, ensure_runtime_stubs_if_missing
 ensure_runtime_stubs_if_missing()
 
 from step_desklet.core import worker as worker_mod  # noqa: E402
+from step_desklet.core import assistant_context as assistant_context_mod  # noqa: E402
 
 
 class _FakeClient:
@@ -265,6 +266,50 @@ class ProviderClientTests(unittest.TestCase):
                 client.complete(model=worker_mod.DEFAULT_NIM_MODEL, messages=[])
         response.close.assert_called_once()
 
+    def test_chats_streams_final_message_tokens_on_each_provider(self):
+        clients = [
+            (worker_mod.NIMChatClient("test"), "custom-nim"),
+            (worker_mod.GroqChatClient("test"), worker_mod.GROQ_MODEL),
+            (worker_mod.LMStudioChatClient(), "local-model"),
+            (worker_mod.FreeLLMAPIChatClient("test"), "auto"),
+        ]
+        for client, model in clients:
+            with self.subTest(model=model):
+                response = self._response(200, {})
+                response.headers["Content-Type"] = "text/event-stream"
+                chunks = [
+                    '{"mode":"final","message":"Hello',
+                    r' \ud83d',
+                    r'\ude00',
+                    r'\nthere!"}',
+                ]
+                events = []
+                response.iter_lines.return_value = [
+                    *(f"data: {json.dumps({'choices': [{'delta': {'content': chunk, 'reasoning_content': 'private'}}]})}"
+                      for chunk in chunks),
+                    "data: [DONE]",
+                ]
+                client.preview_callback = lambda event, text: events.append((event, text))
+                with patch.object(client._session, "post", return_value=response) as post:
+                    result = client.complete(model=model, messages=[])
+                self.assertTrue(post.call_args.kwargs["json"]["stream"])
+                self.assertEqual(result, "".join(chunks))
+                self.assertEqual(events, [
+                    ("stream_reset", ""), ("token", "Hello"), ("token", " \U0001F600"), ("token", "\nthere!"),
+                ])
+                response.close.assert_called_once()
+
+    def test_stream_preview_does_not_display_internal_action_fields(self):
+        response = self._response(200, {})
+        command = '{"mode":"run","reason":"Read something","command":"fixture"}'
+        response.iter_lines.return_value = [
+            "data: " + json.dumps({"choices": [{"delta": {"content": command}}]}),
+            "data: [DONE]",
+        ]
+        preview = Mock()
+        result = worker_mod._read_chat_stream(response, threading.Event(), "Fixture", preview)
+        self.assertEqual(result, command)
+        preview.assert_called_once_with("stream_reset", "")
 
 class WorkerOutcomeAndShutdownTests(unittest.TestCase):
     def test_exact_windows_volume_runs_trusted_skill_without_a_provider(self):
@@ -337,16 +382,16 @@ class WorkerOutcomeAndShutdownTests(unittest.TestCase):
     def test_worker_includes_the_current_pc_date_on_each_turn(self):
         client = _FakeClient([])
         worker = self._make_worker(client)
-        with patch.object(worker_mod, "date") as clock:
-            clock.today.return_value = date(2025, 12, 31)
+        with patch.object(assistant_context_mod, "datetime") as clock:
+            clock.now.return_value.astimezone.return_value = datetime(2025, 12, 31, tzinfo=timezone.utc)
             worker.process_request_sync("What month is it?")
-            clock.today.return_value = date(2026, 1, 1)
+            clock.now.return_value.astimezone.return_value = datetime(2026, 1, 1, tzinfo=timezone.utc)
             worker.process_request_sync("And what year is it now?")
 
         self.assertIn("2025-12-31", client.requests[0][0]["content"])
         self.assertIn("2026-01-01", client.requests[1][0]["content"])
         self.assertNotIn("2025-12-31", client.requests[1][0]["content"])
-        self.assertIn("only when the user asks for it or it is needed for the answer", client.requests[1][0]["content"])
+        self.assertIn("Mention it only when relevant.", client.requests[1][0]["content"])
 
     def test_classify_command_outcomes_all_five_states(self):
         self.assertEqual(
